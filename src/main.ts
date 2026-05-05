@@ -14,6 +14,21 @@ function requiredEnv(name: string) {
   return String(value);
 }
 
+function corsOrigins() {
+  const defaults = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3100',
+    'http://127.0.0.1:3100',
+  ];
+  const raw = String(process.env.CORS_ORIGINS || '').trim();
+  const configured = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return Array.from(new Set([...defaults, ...configured]));
+}
+
 async function bootstrap() {
   dotenv.config();
   const sessionSecret = requiredEnv('SESSION_SECRET');
@@ -33,12 +48,7 @@ async function bootstrap() {
   );
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
   app.enableCors({
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'http://localhost:3100',
-      'http://127.0.0.1:3100',
-    ],
+    origin: corsOrigins(),
     credentials: true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type, Authorization, x-cart-id, x-fingerprint',
