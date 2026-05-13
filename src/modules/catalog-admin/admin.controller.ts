@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Put, Query, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, Not } from 'typeorm';
+import { Repository, ILike, In, Not } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { StagedProduct } from '../../entities/staged-product.entity';
 import { CatalogPublic } from '../../entities/catalog-public.entity';
@@ -49,6 +49,15 @@ function asIncludesKind(value: string | null): IncludesKind | null {
 
 function asKeyboardLayout(value: string | null): KeyboardLayout | null {
   return value as KeyboardLayout | null;
+}
+
+function slugify(value: unknown) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}+/gu, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
 }
 
 @Controller('admin')
@@ -195,6 +204,7 @@ export class AdminController {
       'includes',
       'includes_extra',
       'keyboard_layout',
+      'variant_group',
       'sale_type',
       'discount',
       'final_price',
@@ -214,6 +224,7 @@ export class AdminController {
     if ('color' in body) patch.color = body.color;
     if ('includesExtra' in body) patch.includes_extra = body.includesExtra;
     if ('keyboardLayout' in body) patch.keyboard_layout = body.keyboardLayout;
+    if ('variantGroup' in body) patch.variant_group = body.variantGroup;
     if ('finalPrice' in body) patch.final_price = body.finalPrice;
     if ('minOfferPrice' in body) patch.min_offer_price = body.minOfferPrice;
     if ('discount' in body) patch.discount = body.discount;
@@ -267,7 +278,7 @@ export class AdminController {
         throw new BadRequestException('iphone_model invalid for iphone_number');
       }
     }
-    if (includes === 'Otros' && !includesExtra) {
+    if (productCondition !== 'Nuevo' && includes === 'Otros' && !includesExtra) {
       throw new BadRequestException('includes_extra required');
     }
     if (productCondition && productCondition !== 'Nuevo') {
@@ -331,19 +342,23 @@ export class AdminController {
     if (saleType === 'PREVENTA' || saleType === 'VENTA_SIMPLE') finalPrice = null;
     if (saleType === 'OFERTA') finalPrice = null;
 
-    let autoTitle = validation.autoTitle || staged.title;
-    if (saleType === 'PREVENTA' && autoTitle && !/^preventa\s+/i.test(autoTitle)) {
-      autoTitle = `Preventa ${autoTitle}`.trim();
+    let publishTitle = String(staged.title || validation.autoTitle || '').trim();
+    if (saleType === 'PREVENTA' && publishTitle && !/^preventa\s+/i.test(publishTitle)) {
+      publishTitle = `Preventa ${publishTitle}`.trim();
     }
-    if (autoTitle !== staged.title) {
-      await this.stagedRepo.update({ id }, { title: autoTitle });
+    if (publishTitle !== staged.title) {
+      await this.stagedRepo.update({ id }, { title: publishTitle });
     }
-    const baseSlug = String(body?.slug || autoTitle).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const variantGroup = String(staged.variant_group || '').trim();
+    const requestedSlug = String(body?.slug || '').trim();
+    const baseSlug = variantGroup
+      ? slugify(`${requestedSlug || variantGroup}-${staged.sku}`)
+      : slugify(requestedSlug || publishTitle);
     // 1) Asegurar que el producto principal tenga el precio final elegido
     await this.productRepo.upsert(
       {
         sku: staged.sku,
-        title: autoTitle,
+        title: publishTitle,
         price: String(salePrice ?? '0'),
         sale_type: asSaleType(saleType),
         discount: staged.discount || null,
@@ -359,6 +374,7 @@ export class AdminController {
         includes: asIncludesKind(staged.includes || null),
         includes_extra: staged.includes_extra || null,
         keyboard_layout: asKeyboardLayout(staged.keyboard_layout || null),
+        variant_group: staged.variant_group || null,
         status: 'listed' as any,
         stock: Number(staged.stock ?? 1),
       },
@@ -388,8 +404,47 @@ export class AdminController {
       { conflictPaths: ['product_id'] },
     );
     // Marcar staged como publicado para ocultarlo del inventario
-    await this.stagedRepo.update({ id }, { status: 'published' as any, title: autoTitle });
+    await this.stagedRepo.update({ id }, { status: 'published' as any, title: publishTitle });
     return { ok: true, result: pub.identifiers?.[0], warnings: validation.warnings };
+  }
+
+  @Get('catalog')
+  async listAdminCatalog(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    const products = await this.productRepo.find({
+      order: { updated_at: 'DESC' as any },
+      take: 500,
+    });
+    const productIds = products.map((p) => p.id);
+    const skus = products.map((p) => p.sku).filter(Boolean);
+    const pubs = productIds.length ? await this.publicRepo.findBy({ product_id: In(productIds) }) : [];
+    const stagedRows = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
+    const pubByProduct = new Map(pubs.map((p) => [p.product_id, p] as const));
+    const stagedBySku = new Map(stagedRows.map((s) => [s.sku, s] as const));
+
+    const items = products
+      .filter((product) => product.status !== 'sold')
+      .filter((product) => {
+        const pub = pubByProduct.get(product.id);
+        const staged = stagedBySku.get(product.sku);
+        return Boolean(pub?.is_published) || (!pub && String(staged?.status || '').toLowerCase() === 'published');
+      })
+      .map((product) => {
+        const pub = pubByProduct.get(product.id);
+        const staged = stagedBySku.get(product.sku) || null;
+        return {
+          id: pub?.id || product.id,
+          product_id: product.id,
+          slug: pub?.slug || null,
+          is_published: Boolean(pub?.is_published),
+          category: pub?.category || staged?.category || null,
+          images: pub?.images || staged?.images || [],
+          product,
+          staged,
+        };
+      });
+
+    return { items };
   }
 
   @Post('staged/bulk')
@@ -417,14 +472,14 @@ export class AdminController {
         }
         if (saleType === 'PREVENTA' || saleType === 'VENTA_SIMPLE' || saleType === 'OFERTA') finalPrice = null;
 
-        let autoTitle = validation.autoTitle || s.title;
-        if (saleType === 'PREVENTA' && autoTitle && !/^preventa\s+/i.test(autoTitle)) {
-          autoTitle = `Preventa ${autoTitle}`.trim();
+        let publishTitle = String(s.title || validation.autoTitle || '').trim();
+        if (saleType === 'PREVENTA' && publishTitle && !/^preventa\s+/i.test(publishTitle)) {
+          publishTitle = `Preventa ${publishTitle}`.trim();
         }
         await this.productRepo.upsert(
           {
             sku: s.sku,
-            title: autoTitle,
+            title: publishTitle,
             price: String(salePrice ?? '0'),
             sale_type: asSaleType(saleType),
             discount: s.discount || null,
@@ -440,13 +495,15 @@ export class AdminController {
             includes: asIncludesKind(s.includes || null),
             includes_extra: s.includes_extra || null,
             keyboard_layout: asKeyboardLayout(s.keyboard_layout || null),
+            variant_group: s.variant_group || null,
             status: 'listed' as any,
             stock: Number(s.stock ?? 1),
           },
           { conflictPaths: ['sku'] },
         );
         const product = await this.productRepo.findOne({ where: { sku: s.sku } });
-        const baseSlug = String(autoTitle).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const variantGroup = String(s.variant_group || '').trim();
+        const baseSlug = variantGroup ? slugify(`${variantGroup}-${s.sku}`) : slugify(publishTitle);
         // Resolver slug único por cada item
         let slug = baseSlug || 'producto';
         let tries = 1;
@@ -461,7 +518,7 @@ export class AdminController {
           { product_id: product?.id || s.source_id, slug, is_published: true, category: s.category || null, tags: s.tags || null, images: s.images || [] },
           { conflictPaths: ['product_id'] },
         );
-        await this.stagedRepo.update({ id: s.id }, { status: 'published' as any, title: autoTitle });
+        await this.stagedRepo.update({ id: s.id }, { status: 'published' as any, title: publishTitle });
       }
     }
     return { ok: true };

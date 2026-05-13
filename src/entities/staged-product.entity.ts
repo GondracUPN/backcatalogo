@@ -45,6 +45,9 @@ export class StagedProduct {
   keyboard_layout!: string | null;
 
   @Column({ type: 'text', nullable: true })
+  variant_group!: string | null;
+
+  @Column({ type: 'text', nullable: true })
   sale_type!: string | null;
 
   @Column({ type: 'numeric', precision: 12, scale: 2, nullable: true })

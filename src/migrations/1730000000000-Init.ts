@@ -4,14 +4,16 @@ export class Init1730000000000 implements MigrationInterface {
     name = 'Init1730000000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
-        // Asegurar enum Role idempotente
+        // Asegurar enum Role idempotente sin borrar un tipo que ya esta en uso.
         await queryRunner.query(`DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'Role') THEN
-    DROP TYPE "Role";
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'Role') THEN
+    CREATE TYPE "Role" AS ENUM ('ADMIN', 'VENDEDOR', 'CLIENTE');
   END IF;
 END$$;`);
-        await queryRunner.query(`CREATE TYPE "Role" AS ENUM ('ADMIN', 'VENDEDOR', 'CLIENTE')`);
+        await queryRunner.query(`ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'ADMIN'`);
+        await queryRunner.query(`ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'VENDEDOR'`);
+        await queryRunner.query(`ALTER TYPE "Role" ADD VALUE IF NOT EXISTS 'CLIENTE'`);
         // Tablas con IF NOT EXISTS para evitar fallos si existen
         await queryRunner.query(`CREATE TABLE IF NOT EXISTS "User" (
             "id" SERIAL NOT NULL,
@@ -55,7 +57,7 @@ END$$;`);
         await queryRunner.query(`DROP TABLE "Producto"`);
         await queryRunner.query(`DROP INDEX IF EXISTS "User_username_key"`);
         await queryRunner.query(`DROP TABLE "User"`);
-        await queryRunner.query(`DROP TYPE "Role"`);
+        await queryRunner.query(`DROP TYPE IF EXISTS "Role"`);
     }
 
 }

@@ -151,6 +151,7 @@ export class CartController {
     const product = await this.products.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
     if (product.status === 'sold') throw new BadRequestException('product sold');
+    if (Number(product.stock ?? 1) <= 0) throw new BadRequestException('product out of stock');
 
     let offer: string | null = null;
     if (product.sale_type === 'OFERTA') {

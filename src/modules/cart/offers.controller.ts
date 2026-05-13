@@ -104,6 +104,7 @@ export class OffersController {
       throw new BadRequestException('product is not offer');
     }
     if (product.status === 'sold') throw new BadRequestException('product sold');
+    if (Number(product.stock ?? 1) <= 0) throw new BadRequestException('product out of stock');
 
     const attempt = await this.findAttempt(productId, cartId, fingerprint);
     if (attempt?.blocked) {

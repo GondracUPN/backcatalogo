@@ -65,5 +65,64 @@ broken.notes = JSON.stringify({ color: 'Silver', bateria: { ciclos: 10 }, iphone
 const res2 = validateProductBeforePublish(broken);
 assert(!res2.ok, 'expected validation to fail without battery health');
 
+const macbookDecimalScreen = {
+  ...makeBase(),
+  title: 'MacBook Air M2 13.6',
+  category: 'macbook',
+  iphone_model: null,
+  iphone_number: null,
+  storage_gb: null,
+  battery_cycles: null,
+  battery_health: null,
+  includes: 'Caja + Cable',
+  product_condition: 'Nuevo',
+  sale_type: 'VENTA_SIMPLE',
+  min_offer_price: null,
+  notes: JSON.stringify({
+    color: 'Silver',
+    includes: 'Caja + Cable',
+    specs: {
+      detalle: {
+        tamaño: '13.6 pulgadas',
+        procesador: 'M2',
+        ram: '8 GB',
+        almacenamiento: '256 GB',
+      },
+    },
+  }),
+} as StagedProduct;
+const resMacbookDecimalScreen = validateProductBeforePublish(macbookDecimalScreen);
+assert(resMacbookDecimalScreen.ok, `expected ok with decimal MacBook screen, got errors: ${resMacbookDecimalScreen.errors.join(', ')}`);
+
+const ipad13Screen = {
+  ...makeBase(),
+  title: 'iPad Pro M4 13',
+  category: 'ipad',
+  iphone_model: null,
+  iphone_number: null,
+  storage_gb: null,
+  battery_cycles: null,
+  battery_health: null,
+  includes: 'Caja + Cable',
+  product_condition: 'Nuevo',
+  sale_type: 'VENTA_SIMPLE',
+  min_offer_price: null,
+  notes: JSON.stringify({
+    color: 'Silver',
+    includes: 'Caja + Cable',
+    specs: {
+      detalle: {
+        tamaño: '13',
+        procesador: 'M4',
+        gama: 'Pro',
+        almacenamiento: '256 GB',
+        conectividad: 'WiFi',
+      },
+    },
+  }),
+} as StagedProduct;
+const resIpad13Screen = validateProductBeforePublish(ipad13Screen);
+assert(resIpad13Screen.ok, `expected ok with iPad 13 screen, got errors: ${resIpad13Screen.errors.join(', ')}`);
+
 // eslint-disable-next-line no-console
 console.log('validate-product.test.ts ok');

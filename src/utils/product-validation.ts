@@ -6,7 +6,7 @@ const IPHONE_MODELS = new Set(['Normal', 'Plus', 'Pro', 'Pro Max', 'Mini', 'E'])
 const IPHONE_NUMBERS = new Set(['11', '12', '13', '14', '15', '16', '17']);
 const SCREEN_SIZES: Record<string, string[]> = {
   macbook: ['13', '14', '15', '16'],
-  ipad: ['10.2', '10.9', '11', '12.9'],
+  ipad: ['10.2', '10.9', '11', '12.9', '13'],
 };
 const IPAD_CONNECTIVITY = new Set(['WiFi', 'WiFi + Celular', 'WiFi+Celular']);
 const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
@@ -35,6 +35,21 @@ export function parseNotes(notesRaw: any) {
 
 function normalizeSpaces(value: string) {
   return value.toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+function screenSizeCandidates(value: unknown) {
+  const raw = String(value ?? '').trim().toLowerCase().replace(',', '.');
+  if (!raw) return [];
+  const numeric = raw.match(/\d+(?:\.\d+)?/)?.[0] || raw;
+  const candidates = new Set([raw, numeric]);
+  const asNumber = Number(numeric);
+  if (Number.isFinite(asNumber)) candidates.add(String(Math.floor(asNumber)));
+  return Array.from(candidates);
+}
+
+function isAllowedScreenSize(value: unknown, category: 'macbook' | 'ipad') {
+  const allowed = SCREEN_SIZES[category];
+  return screenSizeCandidates(value).some((candidate) => allowed.includes(candidate));
 }
 
 function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
@@ -107,7 +122,8 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
 
   const includesValue = staged.includes || notes?.includes || '';
   const includesExtra = staged.includes_extra || notes?.includesExtra || '';
-  if (includesValue === 'Otros' && !includesExtra) errors.push('includes_extra requerido');
+  const isNew = String(productCondition || '') === 'Nuevo';
+  if (!isNew && includesValue === 'Otros' && !includesExtra) errors.push('includes_extra requerido');
 
   const images = Array.isArray(staged.images) ? staged.images : [];
   if (!images.length) errors.push('imagenes requeridas');
@@ -116,7 +132,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
   if (category === 'macbook') {
     const screen = String(detalle?.['tamaño'] || detalle?.tamanio || detalle?.tamano || '').trim();
     if (!screen) errors.push('tamano de pantalla requerido');
-    if (screen && !SCREEN_SIZES.macbook.includes(screen)) errors.push('tamano de pantalla invalido');
+    if (screen && !isAllowedScreenSize(screen, 'macbook')) errors.push('tamano de pantalla invalido');
     if (!String(detalle?.procesador || '').trim()) errors.push('procesador requerido');
     if (!String(detalle?.ram || '').trim()) errors.push('ram requerida');
     if (!String(detalle?.almacenamiento || '').trim()) errors.push('ssd requerido');
@@ -127,14 +143,14 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
       if (salud === '' || salud === null) errors.push('salud de bateria requerida');
     }
     if (!String(notes?.color || staged.color || '').trim()) errors.push('color requerido');
-    if (!includesValue) errors.push('incluye requerido');
+    if (!isNew && !includesValue) errors.push('incluye requerido');
   }
 
   if (category === 'ipad') {
     const screen = String(detalle?.['tamaño'] || detalle?.tamanio || detalle?.tamano || '').trim();
     const conn = String(detalle?.conectividad || '').trim();
     if (!screen) errors.push('tamano de pantalla requerido');
-    if (screen && !SCREEN_SIZES.ipad.includes(screen)) errors.push('tamano de pantalla invalido');
+    if (screen && !isAllowedScreenSize(screen, 'ipad')) errors.push('tamano de pantalla invalido');
     if (!String(detalle?.procesador || '').trim()) errors.push('procesador requerido');
     if (!String(detalle?.gama || '').trim()) errors.push('gama requerida');
     if (!String(detalle?.almacenamiento || '').trim()) errors.push('almacenamiento requerido');
@@ -147,7 +163,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
       if (salud === '' || salud === null) errors.push('salud de bateria requerida');
     }
     if (!String(notes?.color || staged.color || '').trim()) errors.push('color requerido');
-    if (!includesValue) errors.push('incluye requerido');
+    if (!isNew && !includesValue) errors.push('incluye requerido');
   }
 
   if (category === 'iphone') {
@@ -166,8 +182,8 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     }
     if (productCondition !== 'Nuevo' && !batteryHealth && batteryHealth !== 0) errors.push('battery_health requerido');
     if (!color) errors.push('color requerido');
-    if (!includesValue) errors.push('incluye requerido');
-    if (includesValue && !IPHONE_INCLUDES_VALUES.has(String(includesValue))) {
+    if (!isNew && !includesValue) errors.push('incluye requerido');
+    if (!isNew && includesValue && !IPHONE_INCLUDES_VALUES.has(String(includesValue))) {
       errors.push('incluye invalido para iphone');
     }
     if (!Number.isFinite(Number(iphoneNumber)) || Number(iphoneNumber) <= 0) {
@@ -223,7 +239,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     const desc = String(detalle?.descripcionOtro || notes?.descripcionOtro || '').trim();
     if (!desc) errors.push('descripcion requerida');
     if (!String(notes?.color || staged.color || '').trim()) errors.push('color requerido');
-    if (!includesValue) errors.push('incluye requerido');
+    if (!isNew && !includesValue) errors.push('incluye requerido');
   }
 
   return { ok: errors.length === 0, errors, warnings };

@@ -49,6 +49,9 @@ export class CatalogProduct {
   keyboard_layout!: KeyboardLayout | null;
 
   @Column({ type: 'text', nullable: true })
+  variant_group!: string | null;
+
+  @Column({ type: 'text', nullable: true })
   sale_type!: SaleType | null;
 
   @Column({ type: 'numeric', precision: 12, scale: 2, nullable: true })
