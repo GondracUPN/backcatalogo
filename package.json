@@ -28,16 +28,16 @@
     "pg": "^8.13.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "typeorm": "^0.3.20"
+    "typeorm": "^0.3.20",
+    "@types/node": "^20.12.12",
+    "typescript": "^5.6.3"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.7",
     "@types/express-session": "^1.18.0",
     "@types/jsonwebtoken": "^9.0.6",
-    "@types/node": "^20.12.12",
     "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.6.3"
+    "ts-node-dev": "^2.0.0"
   }
 }
