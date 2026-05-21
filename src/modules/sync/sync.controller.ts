@@ -88,15 +88,19 @@ export class SyncController {
     const normSpecs = (() => {
       const s = p?.specs || {};
       const d = s?.detalle || {};
+      const sim = d?.esim ?? d?.sim ?? s?.sim ?? null;
       return {
         tipo: s?.tipo ?? null,
         estado: s?.estado ?? null,
+        sim,
         conCaja: s?.conCaja ?? null,
         detalle: {
           id: d?.id ?? null,
+          esim: sim,
           gama: d?.gama ?? null,
           procesador: d?.procesador ?? null,
           generacion: d?.generacion ?? null,
+          numero: d?.numero ?? null,
           modelo: d?.modelo ?? null,
           tamanio: d?.['tama\u00f1o'] ?? d?.tamanio ?? d?.tamano ?? null,
           almacenamiento: d?.almacenamiento ?? null,

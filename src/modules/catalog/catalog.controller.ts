@@ -42,7 +42,10 @@ export class CatalogController {
     let compareAt: number | null = null;
 
     if (saleType === 'PROMOCION') {
-      const computed = finalPrice !== null ? Number(finalPrice) : +(salePrice * (1 - discount / 100)).toFixed(2);
+      const mode = String(notes?.discountMode || notes?.discountType || 'percent').toLowerCase();
+      const computed = finalPrice !== null
+        ? Number(finalPrice)
+        : +(mode === 'amount' ? Math.max(0, salePrice - discount) : salePrice * (1 - discount / 100)).toFixed(2);
       if (isFinite(computed) && computed > 0) price = computed;
       compareAt = salePrice || null;
     } else if (!saleType && typeof notes?.precioLista !== 'undefined') {

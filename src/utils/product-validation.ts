@@ -91,8 +91,10 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
 
   const category = String(staged.category || specs?.tipo || '').toLowerCase();
   const saleType = String(staged.sale_type || '').toUpperCase();
+  const isPreventa = saleType === 'PREVENTA';
   const salePrice = Number(staged.price || 0);
   const discount = Number(staged.discount || 0);
+  const discountMode = String(notes?.discountMode || notes?.discountType || 'percent').toLowerCase();
   const minOffer = Number(staged.min_offer_price || 0);
   const preventaFrom = String(notes?.preventaDateFrom || notes?.preventa?.from || '').trim();
   const preventaTo = String(notes?.preventaDateTo || notes?.preventa?.to || '').trim();
@@ -101,7 +103,11 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
   if (!String(staged.title || '').trim()) errors.push('titulo requerido');
   if (!saleType || !SALE_TYPES.has(saleType)) errors.push('sale_type requerido');
   if (!salePrice || salePrice <= 0) errors.push('precio de venta requerido');
-  if (saleType === 'PROMOCION' && (!discount || discount <= 0)) errors.push('descuento requerido');
+  if (saleType === 'PROMOCION') {
+    if (!discount || discount <= 0) errors.push('descuento requerido');
+    if (discountMode !== 'amount' && discount > 100) errors.push('descuento porcentaje invalido');
+    if (discountMode === 'amount' && discount > salePrice) errors.push('descuento mayor a precio');
+  }
   if (saleType === 'OFERTA') {
     if (!minOffer || minOffer <= 0) errors.push('min_offer_price requerido');
     if (minOffer && salePrice && minOffer > salePrice) errors.push('min_offer_price mayor a precio');
@@ -138,7 +144,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (!String(detalle?.almacenamiento || '').trim()) errors.push('ssd requerido');
     const ciclos = notes?.bateria?.ciclos ?? '';
     const salud = notes?.bateria?.salud ?? '';
-    if (productCondition !== 'Nuevo') {
+    if (!isPreventa && productCondition !== 'Nuevo') {
       if (ciclos === '' || ciclos === null) errors.push('ciclos de bateria requeridos');
       if (salud === '' || salud === null) errors.push('salud de bateria requerida');
     }
@@ -158,7 +164,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (conn && !IPAD_CONNECTIVITY.has(conn)) errors.push('conectividad invalida');
     const ciclos = notes?.bateria?.ciclos ?? '';
     const salud = notes?.bateria?.salud ?? '';
-    if (productCondition !== 'Nuevo') {
+    if (!isPreventa && productCondition !== 'Nuevo') {
       if (ciclos === '' || ciclos === null) errors.push('ciclos de bateria requeridos');
       if (salud === '' || salud === null) errors.push('salud de bateria requerida');
     }
@@ -180,7 +186,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (!Number.isFinite(Number(storageGb)) || Number(storageGb) <= 0) {
       errors.push('storage invalido');
     }
-    if (productCondition !== 'Nuevo' && !batteryHealth && batteryHealth !== 0) errors.push('battery_health requerido');
+    if (!isPreventa && productCondition !== 'Nuevo' && !batteryHealth && batteryHealth !== 0) errors.push('battery_health requerido');
     if (!color) errors.push('color requerido');
     if (!isNew && !includesValue) errors.push('incluye requerido');
     if (!isNew && includesValue && !IPHONE_INCLUDES_VALUES.has(String(includesValue))) {
@@ -198,7 +204,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
         errors.push('iphone_model invalido para iphone_number');
       }
     }
-    if (productCondition !== 'Nuevo' && iphoneNumber && Number(iphoneNumber) >= 15) {
+    if (!isPreventa && productCondition !== 'Nuevo' && iphoneNumber && Number(iphoneNumber) >= 15) {
       if (batteryCycles === '' || batteryCycles === null || batteryCycles === undefined) {
         errors.push('battery_cycles requerido');
       }

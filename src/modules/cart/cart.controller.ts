@@ -68,7 +68,8 @@ export class CartController {
     const discount = Number(product?.discount ?? staged?.discount ?? notes?.discount ?? notes?.descuentoPorc ?? 0);
     const finalPrice = product?.final_price ?? staged?.final_price ?? notes?.finalPrice ?? null;
     if (saleType === 'PROMOCION') {
-      const computed = finalPrice !== null ? Number(finalPrice) : +(salePrice * (1 - discount / 100)).toFixed(2);
+      const mode = String(notes?.discountMode || notes?.discountType || 'percent').toLowerCase();
+      const computed = finalPrice !== null ? Number(finalPrice) : +(mode === 'amount' ? Math.max(0, salePrice - discount) : salePrice * (1 - discount / 100)).toFixed(2);
       if (isFinite(computed) && computed > 0) return computed;
     }
     return salePrice;

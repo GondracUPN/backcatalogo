@@ -4,6 +4,7 @@ import { LoginDto, RegisterDto } from '../../dtos/auth.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../../entities/user.entity';
+import * as bcrypt from 'bcryptjs';
 
 @Controller('auth')
 export class AuthController {
@@ -50,10 +51,12 @@ export class AuthController {
     const payload = this.requireRole(authHeader, ['ADMIN']);
     if (!payload) throw new ForbiddenException();
     const { username, password } = body || {};
-    const roleUp = (body.role as string | undefined) || 'CLIENTE';
+    const roleUp = String((body as any)?.role || 'CLIENTE').trim().toUpperCase();
+    if (!username || !String(username).trim()) throw new BadRequestException('username required');
+    if (!password || String(password).length < 6) throw new BadRequestException('password must be at least 6 characters');
+    if (!['ADMIN', 'VENDEDOR', 'CLIENTE'].includes(roleUp)) throw new BadRequestException('invalid role');
     const exists = await this.usersRepo.findOne({ where: { username } });
     if (exists) throw new ConflictException('username already exists');
-    const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await this.usersRepo.save(this.usersRepo.create({ username, passwordHash, role: roleUp as any }));
     return { id: user.id, username: user.username, role: String(user.role).toLowerCase() };

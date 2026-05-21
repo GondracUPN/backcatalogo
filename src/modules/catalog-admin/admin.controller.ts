@@ -60,6 +60,28 @@ function slugify(value: unknown) {
     .replace(/(^-|-$)/g, '');
 }
 
+function truthyQuery(value: unknown) {
+  return ['1', 'true', 'yes', 'si', 'sí', 'on'].includes(String(value || '').toLowerCase());
+}
+
+function parseNotes(value: unknown) {
+  try {
+    return typeof value === 'string' ? JSON.parse(value) : value || {};
+  } catch {
+    return {};
+  }
+}
+
+function promotionDiscountMode(notes: any, fallback?: unknown) {
+  const raw = String(fallback ?? notes?.discountMode ?? notes?.discountType ?? 'percent').toLowerCase();
+  return raw === 'amount' || raw === 'flat' || raw === 'soles' ? 'amount' : 'percent';
+}
+
+function promotionFinalPrice(price: number, discount: number, mode: string) {
+  const computed = mode === 'amount' ? price - discount : price * (1 - discount / 100);
+  return +Math.max(0, computed).toFixed(2);
+}
+
 @Controller('admin')
 export class AdminController {
   constructor(
@@ -129,18 +151,54 @@ export class AdminController {
     @Query('status') status?: string,
     @Query('page') page = '1',
     @Query('pageSize') pageSize = '20',
+    @Query('pawnMode') pawnMode?: string,
+    @Query('soloTiendasPawn') soloTiendasPawn?: string,
+    @Query('savedPawnOnly') savedPawnOnly?: string,
   ) {
     this.requireAdmin(authHeader);
+    const shouldSyncPawnStores = pawnMode === 'sync' || truthyQuery(soloTiendasPawn);
+    const shouldReadSavedPawnOnly = pawnMode === 'saved' || truthyQuery(savedPawnOnly);
     try {
-      await this.pullSync.syncStaged();
+      if (!shouldReadSavedPawnOnly) {
+        await this.pullSync.syncStaged({ includeExtraSearches: shouldSyncPawnStores });
+      }
     } catch {}
+
+    if (shouldReadSavedPawnOnly) {
+      const preview = await this.pullSync.previewStagedPawnSearch();
+      let items = preview.items || [];
+      if (q) {
+        const qLower = String(q).toLowerCase();
+        items = items.filter((item: any) => String(item?.title || '').toLowerCase().includes(qLower));
+      }
+      if (status) {
+        items = items.filter((item: any) => String(item?.status || '') === String(status));
+      } else {
+        items = items.filter((item: any) => String(item?.status || '').toLowerCase() !== 'published');
+      }
+      const total = items.length;
+      const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
+      if (!allRows) {
+        const take = Math.min(100, Math.max(1, parseInt(String(pageSize))));
+        const safePage = Math.max(1, parseInt(String(page)));
+        items = items.slice((safePage - 1) * take, safePage * take);
+      }
+      return { items, total };
+    }
+
     const where: any = {};
     if (q) where.title = ILike(`%${q}%`);
     if (status) where.status = status;
     else where.status = Not('published' as any);
-    const take = Math.min(100, Math.max(1, parseInt(String(pageSize))));
-    const skip = (Math.max(1, parseInt(String(page))) - 1) * take;
-    const [items, total] = await this.stagedRepo.findAndCount({ where, order: { updated_at: 'DESC' as any }, take, skip });
+    const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
+    const options: any = { where, order: { updated_at: 'DESC' as any } };
+    if (!allRows) {
+      const take = Math.min(100, Math.max(1, parseInt(String(pageSize))));
+      const skip = (Math.max(1, parseInt(String(page))) - 1) * take;
+      options.take = take;
+      options.skip = skip;
+    }
+    const [items, total] = await this.stagedRepo.findAndCount(options);
     return { items, total };
   }
 
@@ -235,6 +293,7 @@ export class AdminController {
 
     const category = String(patch.category ?? staged.category ?? '').toLowerCase();
     const saleType = String(patch.sale_type ?? staged.sale_type ?? '').toUpperCase();
+    const patchNotes = parseNotes(patch.notes ?? staged.notes);
     const iphoneModel = patch.iphone_model ?? staged.iphone_model;
     const iphoneNumber = patch.iphone_number ?? staged.iphone_number;
     const storageGb = patch.storage_gb ?? staged.storage_gb;
@@ -259,7 +318,7 @@ export class AdminController {
       if (!iphoneModel) throw new BadRequestException('iphone_model required');
       if (!iphoneNumber) throw new BadRequestException('iphone_number required');
       if (!storageGb) throw new BadRequestException('storage_gb required');
-      if (productCondition !== 'Nuevo' && (batteryHealth === undefined || batteryHealth === null || batteryHealth === '')) {
+      if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && (batteryHealth === undefined || batteryHealth === null || batteryHealth === '')) {
         throw new BadRequestException('battery_health required');
       }
       if (!color) throw new BadRequestException('color required');
@@ -290,7 +349,10 @@ export class AdminController {
       if (discount === undefined || discount === null || discount === '') throw new BadRequestException('discount required');
       const price = Number(patch.price ?? staged.price ?? 0);
       const d = Number(discount || 0);
-      const finalPrice = +(price * (1 - d / 100)).toFixed(2);
+      const mode = promotionDiscountMode(patchNotes, body?.discountMode ?? body?.discountType);
+      if (mode === 'percent' && d > 100) throw new BadRequestException('discount percent invalid');
+      if (mode === 'amount' && d > price) throw new BadRequestException('discount amount greater than price');
+      const finalPrice = promotionFinalPrice(price, d, mode);
       if (isFinite(finalPrice)) patch.final_price = String(finalPrice);
     }
     if (saleType === 'OFERTA') {
@@ -333,10 +395,11 @@ export class AdminController {
     if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
     const salePrice = Number(staged.price ?? 0);
+    const notes = parseNotes(staged.notes);
     let finalPrice = staged.final_price ? Number(staged.final_price) : null;
     if (saleType === 'PROMOCION') {
       const d = Number(staged.discount || 0);
-      const computed = +(salePrice * (1 - d / 100)).toFixed(2);
+      const computed = promotionFinalPrice(salePrice, d, promotionDiscountMode(notes));
       finalPrice = isFinite(computed) ? computed : null;
     }
     if (saleType === 'PREVENTA' || saleType === 'VENTA_SIMPLE') finalPrice = null;
@@ -464,10 +527,11 @@ export class AdminController {
         if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
         const salePrice = Number(s.price ?? 0);
+        const notes = parseNotes(s.notes);
         let finalPrice: number | null = s.final_price ? Number(s.final_price) : null;
         if (saleType === 'PROMOCION') {
           const d = Number(s.discount || 0);
-          const computed = +(salePrice * (1 - d / 100)).toFixed(2);
+          const computed = promotionFinalPrice(salePrice, d, promotionDiscountMode(notes));
           finalPrice = isFinite(computed) ? computed : null;
         }
         if (saleType === 'PREVENTA' || saleType === 'VENTA_SIMPLE' || saleType === 'OFERTA') finalPrice = null;
