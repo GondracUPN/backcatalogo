@@ -72,6 +72,14 @@ function parseNotes(value: unknown) {
   }
 }
 
+function stringifyNotes(value: any) {
+  try {
+    return JSON.stringify(value || {});
+  } catch {
+    return '{}';
+  }
+}
+
 function promotionDiscountMode(notes: any, fallback?: unknown) {
   const raw = String(fallback ?? notes?.discountMode ?? notes?.discountType ?? 'percent').toLowerCase();
   return raw === 'amount' || raw === 'flat' || raw === 'soles' ? 'amount' : 'percent';
@@ -123,6 +131,34 @@ export class AdminController {
       metadata jsonb NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+  }
+
+  private async ensurePossibleClientsTable() {
+    const mgr = this.productRepo.manager;
+    await mgr.query(`CREATE TABLE IF NOT EXISTS possible_clients (
+      id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+      source_request_id uuid NULL UNIQUE,
+      cart_id text NULL,
+      request_type text NULL,
+      product_id uuid NULL,
+      product_title text NULL,
+      product_color text NULL,
+      product_price numeric(12,2) NOT NULL DEFAULT 0,
+      customer_name text NOT NULL,
+      customer_phone text NOT NULL,
+      location_scope text NULL,
+      location_value text NULL,
+      status text NOT NULL DEFAULT 'pending',
+      customer_kind text NULL,
+      sale_place_type text NULL,
+      sale_location text NULL,
+      metadata jsonb NULL,
+      purchased_at timestamptz NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`);
+    await mgr.query(`CREATE INDEX IF NOT EXISTS idx_possible_clients_status ON possible_clients(status)`);
+    await mgr.query(`CREATE INDEX IF NOT EXISTS idx_possible_clients_created_at ON possible_clients(created_at DESC)`);
   }
 
   private async ensureCatalogViewsTable() {
@@ -468,6 +504,70 @@ export class AdminController {
     );
     // Marcar staged como publicado para ocultarlo del inventario
     await this.stagedRepo.update({ id }, { status: 'published' as any, title: publishTitle });
+    const mergeIds = Array.isArray(body?.mergeStagedIds)
+      ? body.mergeStagedIds.map((value: unknown) => String(value || '').trim()).filter(Boolean).filter((value: string) => value !== id)
+      : [];
+    const mainSkuKey = String(staged.sku || '').trim().toLowerCase();
+    const mergeSkus = Array.isArray(body?.mergeStagedSkus)
+      ? body.mergeStagedSkus
+          .map((value: unknown) => String(value || '').trim())
+          .filter(Boolean)
+          .filter((value: string) => value.toLowerCase() !== mainSkuKey)
+      : [];
+    const mergeSkuKeys = Array.from(new Set(mergeSkus.map((sku: string) => sku.toLowerCase())));
+    const mergeRowsBySku = mergeSkuKeys.length
+      ? await this.stagedRepo
+          .createQueryBuilder('staged')
+          .where('LOWER(staged.sku) IN (:...skus)', { skus: mergeSkuKeys })
+          .getMany()
+      : [];
+    const foundSkuKeys = new Set(mergeRowsBySku.map((row) => String(row.sku || '').trim().toLowerCase()));
+    const missingSkus = mergeSkus.filter((sku: string) => !foundSkuKeys.has(sku.toLowerCase()));
+    if (missingSkus.length) throw new BadRequestException(`sku not found: ${missingSkus.join(', ')}`);
+    const allMergeIds = Array.from(new Set([
+      ...mergeIds,
+      ...mergeRowsBySku.map((row) => row.id),
+    ].filter((value) => value && value !== id)));
+    const mergeRowsById = mergeIds.length ? await this.stagedRepo.findBy({ id: In(mergeIds) }) : [];
+    const allMergeRows = Array.from(
+      new Map([...mergeRowsById, ...mergeRowsBySku].map((row) => [row.id, row])).values(),
+    ).filter((row) => row.id !== id);
+    if (allMergeRows.length) {
+      const linkedSkus = allMergeRows.map((row) => String(row.sku || '').trim()).filter(Boolean);
+      const mainNotes = parseNotes(staged.notes);
+      await this.stagedRepo.update(
+        { id },
+        {
+          notes: stringifyNotes({
+            ...(mainNotes || {}),
+            linkedSkus,
+            linkedSkuGroup: {
+              mainSku: staged.sku,
+              skus: linkedSkus,
+            },
+          }),
+        },
+      );
+      for (const row of allMergeRows) {
+        const rowNotes = parseNotes(row.notes);
+        await this.stagedRepo.update(
+          { id: row.id },
+          {
+            notes: stringifyNotes({
+              ...(rowNotes || {}),
+              linkedMainSku: staged.sku,
+              linkedMainTitle: publishTitle,
+              linkedSkuGroup: {
+                mainSku: staged.sku,
+              },
+            }),
+          },
+        );
+      }
+    }
+    if (allMergeIds.length) {
+      await this.stagedRepo.update({ id: In(allMergeIds) }, { status: 'published' as any, title: publishTitle });
+    }
     return { ok: true, result: pub.identifiers?.[0], warnings: validation.warnings };
   }
 
@@ -482,11 +582,51 @@ export class AdminController {
     const skus = products.map((p) => p.sku).filter(Boolean);
     const pubs = productIds.length ? await this.publicRepo.findBy({ product_id: In(productIds) }) : [];
     const stagedRows = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
+    const linkedRowsSource = skus.length
+      ? await this.stagedRepo.find({
+          where: { status: 'published' as any },
+          order: { updated_at: 'DESC' as any },
+          take: 1000,
+        })
+      : [];
+    const skuSet = new Set(skus);
+    const linkedRows = linkedRowsSource.filter((row) => {
+      const linkedNotes = parseNotes(row.notes);
+      return skuSet.has(String(linkedNotes?.linkedMainSku || '').trim());
+    });
+    const publishedStagedWithoutProduct = linkedRowsSource.filter((row) => !skuSet.has(String(row.sku || '').trim()));
     const pubByProduct = new Map(pubs.map((p) => [p.product_id, p] as const));
     const stagedBySku = new Map(stagedRows.map((s) => [s.sku, s] as const));
+    const linkedByMainSku = new Map<string, StagedProduct[]>();
+    for (const linked of linkedRows) {
+      const linkedNotes = parseNotes(linked.notes);
+      const mainSku = String(linkedNotes?.linkedMainSku || '').trim();
+      if (!mainSku) continue;
+      linkedByMainSku.set(mainSku, [...(linkedByMainSku.get(mainSku) || []), linked]);
+    }
+    const childSkuKeys = new Set<string>();
+    for (const stagedRow of [...stagedRows, ...linkedRowsSource]) {
+      const rowNotes = parseNotes(stagedRow.notes);
+      if (rowNotes?.linkedMainSku) childSkuKeys.add(String(stagedRow.sku || '').trim().toLowerCase());
+      const linkedSkus = Array.isArray(rowNotes?.linkedSkus) ? rowNotes.linkedSkus : [];
+      linkedSkus.forEach((sku: unknown) => {
+        const key = String(sku || '').trim().toLowerCase();
+        if (key) childSkuKeys.add(key);
+      });
+    }
+    const normalizeTitle = (value: unknown) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const fallbackLinkedByTitle = new Map<string, StagedProduct[]>();
+    for (const linked of publishedStagedWithoutProduct) {
+      const linkedNotes = parseNotes(linked.notes);
+      if (linkedNotes?.linkedMainSku) continue;
+      const key = normalizeTitle(linked.title);
+      if (!key) continue;
+      fallbackLinkedByTitle.set(key, [...(fallbackLinkedByTitle.get(key) || []), linked]);
+    }
 
     const items = products
       .filter((product) => product.status !== 'sold')
+      .filter((product) => !childSkuKeys.has(String(product.sku || '').trim().toLowerCase()))
       .filter((product) => {
         const pub = pubByProduct.get(product.id);
         const staged = stagedBySku.get(product.sku);
@@ -495,6 +635,8 @@ export class AdminController {
       .map((product) => {
         const pub = pubByProduct.get(product.id);
         const staged = stagedBySku.get(product.sku) || null;
+        const linkedExplicit = linkedByMainSku.get(product.sku) || [];
+        const linkedFallback = linkedExplicit.length ? [] : (fallbackLinkedByTitle.get(normalizeTitle(product.title)) || []);
         return {
           id: pub?.id || product.id,
           product_id: product.id,
@@ -504,6 +646,7 @@ export class AdminController {
           images: pub?.images || staged?.images || [],
           product,
           staged,
+          linkedStaged: [...linkedExplicit, ...linkedFallback],
         };
       });
 
@@ -612,10 +755,66 @@ export class AdminController {
     const product = await this.productRepo.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
     // Marcar el producto como vendido (se acepta fecha en body pero no se persiste aún)
-    await this.productRepo.update({ id: productId }, { status: 'sold' as any });
+    const currentStock = Math.max(0, Number(product.stock || 0));
+    if (product.status === 'sold' || currentStock <= 0) throw new BadRequestException('product out of stock');
+
+    const mainStaged = product.sku ? await this.stagedRepo.findOne({ where: { sku: product.sku } }) : null;
+    const mainNotes = parseNotes(mainStaged?.notes);
+    const linkedSkusFromMain = Array.isArray(mainNotes?.linkedSkus)
+      ? mainNotes.linkedSkus.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      : [];
+    const allPublishedStaged = await this.stagedRepo.find({
+      where: { status: 'published' as any },
+      order: { updated_at: 'DESC' as any },
+      take: 1000,
+    });
+    const availableLinked = allPublishedStaged.filter((row) => {
+      const rowSku = String(row.sku || '').trim();
+      const rowNotes = parseNotes(row.notes);
+      return rowSku !== product.sku && (
+        String(rowNotes?.linkedMainSku || '').trim() === product.sku ||
+        linkedSkusFromMain.some((sku: string) => sku.toLowerCase() === rowSku.toLowerCase())
+      );
+    });
+    const soldLinked = availableLinked[0] || null;
+    const soldUnitSku = soldLinked?.sku || product.sku || '';
+    const nextStock = Math.max(0, currentStock - 1);
+    await this.productRepo.update(
+      { id: productId },
+      {
+        stock: nextStock,
+        status: nextStock <= 0 ? ('sold' as any) : ('listed' as any),
+      },
+    );
+    if (soldLinked) {
+      await this.stagedRepo.update({ id: soldLinked.id }, { status: 'sold' as any });
+      await this.productRepo.update({ sku: soldLinked.sku }, { status: 'sold' as any, stock: 0 });
+      if (mainStaged) {
+        const updatedMainNotes = parseNotes(mainStaged.notes);
+        const remainingLinkedSkus = (Array.isArray(updatedMainNotes?.linkedSkus) ? updatedMainNotes.linkedSkus : [])
+          .map((value: unknown) => String(value || '').trim())
+          .filter((sku: string) => sku && sku.toLowerCase() !== String(soldLinked.sku || '').trim().toLowerCase());
+        await this.stagedRepo.update(
+          { id: mainStaged.id },
+          {
+            notes: stringifyNotes({
+              ...(updatedMainNotes || {}),
+              linkedSkus: remainingLinkedSkus,
+              linkedSkuGroup: {
+                ...(updatedMainNotes?.linkedSkuGroup || {}),
+                mainSku: product.sku,
+                skus: remainingLinkedSkus,
+              },
+            }),
+          },
+        );
+      }
+    } else if (nextStock <= 0 && mainStaged) {
+      await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any });
+    }
     // Registrar venta en tabla auxiliar (auto-creación si no existe)
     const soldAt = body?.saleDate ? new Date(body.saleDate) : new Date();
-    const sku = product?.sku || '';
+    const sku = soldUnitSku;
     const explicitSalePrice = body?.salePrice;
     const parsedSalePrice =
       explicitSalePrice === undefined || explicitSalePrice === null || explicitSalePrice === ''
@@ -625,6 +824,13 @@ export class AdminController {
     const price = Number.isFinite(parsedSalePrice)
       ? parsedSalePrice
       : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
+    const customerName = String(body?.name || body?.customerName || '').trim() || '-';
+    const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '') || '-';
+    const customerKindRaw = String(body?.customerKind || '').trim();
+    const customerKind = ['tranquilo', 'regateador'].includes(customerKindRaw) ? customerKindRaw : 'tranquilo';
+    const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
+    const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : 'almacen';
+    const saleLocation = salePlaceType === 'otro' ? (String(body?.saleLocation || '').trim() || '-') : 'Almacen';
     const mgr = this.productRepo.manager;
     await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
       id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -634,7 +840,53 @@ export class AdminController {
       sold_at timestamptz NOT NULL DEFAULT now(),
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
-    await mgr.query(`INSERT INTO sold_records (product_id, sku, sale_price, sold_at) VALUES ($1,$2,$3,$4)`, [productId, sku, price, soldAt]);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
+    await mgr.query(
+      `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [productId, sku, price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+    );
+    await this.ensurePossibleClientsTable();
+    await mgr.query(
+      `
+      INSERT INTO possible_clients (
+        source_request_id,
+        cart_id,
+        request_type,
+        product_id,
+        product_title,
+        product_color,
+        product_price,
+        customer_name,
+        customer_phone,
+        location_scope,
+        location_value,
+        status,
+        customer_kind,
+        sale_place_type,
+        sale_location,
+        purchased_at
+      )
+      VALUES (NULL,$1,'manual-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11)
+      `,
+      [
+        `manual-${productId}-${Date.now()}`,
+        productId,
+        product.title || sku || 'Producto',
+        product.color || null,
+        price,
+        customerName,
+        customerPhone,
+        customerKind,
+        salePlaceType,
+        saleLocation,
+        soldAt,
+      ],
+    );
     return { ok: true };
   }
 
@@ -642,10 +894,10 @@ export class AdminController {
   async unmarkSold(
     @Headers('authorization') authHeader: string,
     @Param('productId') productId: string,
+    @Body() body?: any,
   ) {
     this.requireAdmin(authHeader);
     // Restaurar estado del producto a 'listed' para volver a catálogo
-    await this.productRepo.update({ id: productId }, { status: 'listed' as any });
     // Eliminar registros de venta asociados
     const mgr = this.productRepo.manager;
     await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
@@ -656,7 +908,74 @@ export class AdminController {
       sold_at timestamptz NOT NULL DEFAULT now(),
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
-    await mgr.query(`DELETE FROM sold_records WHERE product_id = $1`, [productId]);
+    const saleId = String(body?.saleId || '').trim();
+    const records = saleId
+      ? await mgr.query(`SELECT * FROM sold_records WHERE id = $1 AND product_id = $2 LIMIT 1`, [saleId, productId])
+      : await mgr.query(`SELECT * FROM sold_records WHERE product_id = $1 ORDER BY sold_at DESC, created_at DESC LIMIT 1`, [productId]);
+    const record = records?.[0];
+    if (!record) throw new BadRequestException('sale record not found');
+
+    const product = await this.productRepo.findOne({ where: { id: productId } });
+    if (!product) throw new BadRequestException('product not found');
+
+    const soldSku = String(record.sku || '').trim();
+    const mainSku = String(product.sku || '').trim();
+    const soldIsMain = soldSku.toLowerCase() === mainSku.toLowerCase();
+    const nextStock = Math.max(1, Number(product.stock || 0) + 1);
+    await this.productRepo.update({ id: productId }, { status: 'listed' as any, stock: nextStock });
+
+    const mainStaged = mainSku ? await this.stagedRepo.findOne({ where: { sku: mainSku } }) : null;
+    if (mainStaged) await this.stagedRepo.update({ id: mainStaged.id }, { status: 'published' as any });
+
+    if (!soldIsMain && soldSku) {
+      const linkedStaged = await this.stagedRepo
+        .createQueryBuilder('staged')
+        .where('LOWER(staged.sku) = :sku', { sku: soldSku.toLowerCase() })
+        .getOne();
+      if (linkedStaged) {
+        const linkedNotes = parseNotes(linkedStaged.notes);
+        await this.stagedRepo.update(
+          { id: linkedStaged.id },
+          {
+            status: 'published' as any,
+            notes: stringifyNotes({
+              ...(linkedNotes || {}),
+              linkedMainSku: mainSku,
+              linkedMainTitle: product.title,
+              linkedSkuGroup: {
+                ...(linkedNotes?.linkedSkuGroup || {}),
+                mainSku,
+              },
+            }),
+          },
+        );
+      }
+      await this.productRepo.update({ sku: soldSku }, { status: 'listed' as any, stock: 1 });
+      if (mainStaged) {
+        const mainNotes = parseNotes(mainStaged.notes);
+        const currentSkus = Array.isArray(mainNotes?.linkedSkus)
+          ? mainNotes.linkedSkus.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+          : [];
+        const hasSku = currentSkus.some((sku: string) => sku.toLowerCase() === soldSku.toLowerCase());
+        const linkedSkus = hasSku ? currentSkus : [...currentSkus, soldSku];
+        await this.stagedRepo.update(
+          { id: mainStaged.id },
+          {
+            notes: stringifyNotes({
+              ...(mainNotes || {}),
+              linkedSkus,
+              linkedSkuGroup: {
+                ...(mainNotes?.linkedSkuGroup || {}),
+                mainSku,
+                skus: linkedSkus,
+              },
+            }),
+          },
+        );
+      }
+    }
+
+    await mgr.query(`DELETE FROM sold_records WHERE id = $1`, [record.id]);
     return { ok: true };
   }
 
@@ -672,6 +991,11 @@ export class AdminController {
       sold_at timestamptz NOT NULL DEFAULT now(),
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
+    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
     const rows = await mgr.query(`
       SELECT sr.*, p.title
       FROM sold_records sr
@@ -707,6 +1031,119 @@ export class AdminController {
       LIMIT 500
     `);
     return { items: rows };
+  }
+
+  @Post('contact-requests/:id/attended')
+  async markContactRequestAttended(@Headers('authorization') authHeader: string, @Param('id') id: string) {
+    this.requireAdmin(authHeader);
+    await this.ensureContactRequestsTable();
+    await this.ensurePossibleClientsTable();
+    const mgr = this.productRepo.manager;
+    const rows = await mgr.query(`SELECT * FROM contact_requests WHERE id = $1 LIMIT 1`, [id]);
+    const request = rows?.[0];
+    if (!request) throw new BadRequestException('contact request not found');
+
+    const inserted = await mgr.query(
+      `
+      INSERT INTO possible_clients (
+        source_request_id,
+        cart_id,
+        request_type,
+        product_id,
+        product_title,
+        product_color,
+        product_price,
+        customer_name,
+        customer_phone,
+        location_scope,
+        location_value,
+        metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      ON CONFLICT (source_request_id) DO UPDATE SET
+        cart_id = EXCLUDED.cart_id,
+        request_type = EXCLUDED.request_type,
+        product_id = EXCLUDED.product_id,
+        product_title = EXCLUDED.product_title,
+        product_color = EXCLUDED.product_color,
+        product_price = EXCLUDED.product_price,
+        customer_name = EXCLUDED.customer_name,
+        customer_phone = EXCLUDED.customer_phone,
+        location_scope = EXCLUDED.location_scope,
+        location_value = EXCLUDED.location_value,
+        metadata = EXCLUDED.metadata,
+        updated_at = now()
+      RETURNING *
+      `,
+      [
+        request.id,
+        request.cart_id,
+        request.request_type,
+        request.product_id,
+        request.product_title,
+        request.product_color,
+        request.product_price,
+        request.customer_name,
+        request.customer_phone,
+        request.location_scope,
+        request.location_value,
+        request.metadata,
+      ],
+    );
+    await mgr.query(`DELETE FROM contact_requests WHERE id = $1`, [id]);
+    return { ok: true, item: inserted?.[0] || null };
+  }
+
+  @Get('possible-clients')
+  async listPossibleClients(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    await this.ensurePossibleClientsTable();
+    const rows = await this.productRepo.manager.query(`
+      SELECT *
+      FROM possible_clients
+      ORDER BY
+        CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+        created_at DESC
+      LIMIT 500
+    `);
+    return { items: rows };
+  }
+
+  @Post('possible-clients/:id/discard')
+  async discardPossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string) {
+    this.requireAdmin(authHeader);
+    await this.ensurePossibleClientsTable();
+    await this.productRepo.manager.query(`DELETE FROM possible_clients WHERE id = $1`, [id]);
+    return { ok: true };
+  }
+
+  @Post('possible-clients/:id/purchase')
+  async markPossibleClientPurchased(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
+    this.requireAdmin(authHeader);
+    await this.ensurePossibleClientsTable();
+    const customerKind = String(body?.customerKind || '').trim();
+    const salePlaceType = String(body?.salePlaceType || '').trim();
+    const saleLocation = String(body?.saleLocation || '').trim();
+    if (!['tranquilo', 'regateador'].includes(customerKind)) throw new BadRequestException('invalid customer kind');
+    if (!['almacen', 'otro'].includes(salePlaceType)) throw new BadRequestException('invalid sale place');
+    if (salePlaceType === 'otro' && !saleLocation) throw new BadRequestException('sale location required');
+
+    const rows = await this.productRepo.manager.query(
+      `
+      UPDATE possible_clients
+      SET status = 'purchased',
+          customer_kind = $2,
+          sale_place_type = $3,
+          sale_location = $4,
+          purchased_at = now(),
+          updated_at = now()
+      WHERE id = $1
+      RETURNING *
+      `,
+      [id, customerKind, salePlaceType, salePlaceType === 'otro' ? saleLocation : 'Almacen'],
+    );
+    if (!rows?.[0]) throw new BadRequestException('possible client not found');
+    return { ok: true, item: rows[0] };
   }
 
   @Get('analytics/views')

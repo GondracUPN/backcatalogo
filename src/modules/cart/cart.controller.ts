@@ -91,6 +91,16 @@ export class CartController {
     return 'purchase';
   }
 
+  private assertAvailableQuantity(product: CatalogProduct, qty: number) {
+    if (!Number.isInteger(qty) || qty < 1) throw new BadRequestException('invalid quantity');
+    if (product.status === 'sold') throw new BadRequestException('product sold');
+    const stock = Number(product.stock ?? 0);
+    if (!Number.isFinite(stock) || stock <= 0) throw new BadRequestException('product out of stock');
+    const isNew = String(product.product_condition || '').toLowerCase().includes('nuevo');
+    const maxQty = isNew ? stock : 1;
+    if (qty > maxQty) throw new BadRequestException('quantity exceeds stock');
+  }
+
   private async ensureContactRequestsTable() {
     const mgr = this.cartItems.manager;
     await mgr.query(`CREATE TABLE IF NOT EXISTS contact_requests (
@@ -145,14 +155,13 @@ export class CartController {
     if (!cartId) throw new BadRequestException('missing cartId');
     req.session.cartId = cartId;
     const productId = String(body?.productId || '');
-    const qty = Math.max(1, Number(body?.qty || 1));
+    const qty = Number(body?.qty || 1);
     const offerPrice = body?.offerPrice;
     if (!productId) throw new BadRequestException('missing productId');
 
     const product = await this.products.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
-    if (product.status === 'sold') throw new BadRequestException('product sold');
-    if (Number(product.stock ?? 1) <= 0) throw new BadRequestException('product out of stock');
+    this.assertAvailableQuantity(product, qty);
 
     let offer: string | null = null;
     if (product.sale_type === 'OFERTA') {
@@ -215,6 +224,9 @@ export class CartController {
       await this.refreshSessionCart(req, cartId);
       return { ok: true, deleted: true };
     }
+    const product = await this.products.findOne({ where: { id: item.product_id } });
+    if (!product) throw new BadRequestException('product not found');
+    this.assertAvailableQuantity(product, qty);
     item.qty = qty;
     await this.cartItems.save(item);
     await this.refreshSessionCart(req, cartId);
