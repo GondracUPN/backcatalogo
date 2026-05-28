@@ -37,17 +37,26 @@ export class CatalogController {
     const saleType = String(product?.sale_type || staged?.sale_type || notes?.saleType || '').toUpperCase();
     const salePrice = Number(product?.price ?? staged?.price ?? 0);
     const discount = Number(product?.discount ?? staged?.discount ?? notes?.discount ?? notes?.descuentoPorc ?? 0);
+    const discountMode = String(notes?.discountMode || notes?.discountType || 'percent').toLowerCase();
     const finalPrice = product?.final_price ?? staged?.final_price ?? notes?.finalPrice ?? null;
     let price = salePrice;
     let compareAt: number | null = null;
+    let promoLabel = '';
 
     if (saleType === 'PROMOCION') {
-      const mode = String(notes?.discountMode || notes?.discountType || 'percent').toLowerCase();
       const computed = finalPrice !== null
         ? Number(finalPrice)
-        : +(mode === 'amount' ? Math.max(0, salePrice - discount) : salePrice * (1 - discount / 100)).toFixed(2);
+        : +(discountMode === 'amount' ? Math.max(0, salePrice - discount) : salePrice * (1 - discount / 100)).toFixed(2);
       if (isFinite(computed) && computed > 0) price = computed;
       compareAt = salePrice || null;
+      const savings = compareAt && compareAt > price ? compareAt - price : 0;
+      promoLabel = discountMode === 'amount' && discount > 0
+        ? `Ahorra S/ ${discount.toFixed(2)}`
+        : discount > 0
+          ? `${discount}% OFF`
+          : savings > 0
+            ? `Ahorra S/ ${savings.toFixed(2)}`
+            : '';
     } else if (!saleType && typeof notes?.precioLista !== 'undefined') {
       compareAt = notes?.precioLista ? Number(notes.precioLista) : null;
       if ((!price || price <= 0) && typeof notes?.precioLista !== 'undefined') {
@@ -66,12 +75,12 @@ export class CatalogController {
         ''
     );
 
-    return { condition, saleType, price: isFinite(price) ? price : 0, compareAt };
+    return { condition, saleType, price: isFinite(price) ? price : 0, compareAt, discount, discountMode, promoLabel };
   }
 
   private compactRow(pub: CatalogPublic, product: CatalogProduct | undefined, staged: StagedProduct | undefined) {
     const img = (Array.isArray(pub.images) && pub.images[0]) || (Array.isArray(staged?.images) && staged?.images[0]) || '/placeholder.svg';
-    const { condition, saleType, price, compareAt } = this.priceMeta(product, staged);
+    const { condition, saleType, price, compareAt, discount, discountMode, promoLabel } = this.priceMeta(product, staged);
     const notes = this.parseNotes(staged);
     const stock = Number(product?.stock ?? staged?.stock ?? 1);
     const sold = product?.status === 'sold';
@@ -99,6 +108,9 @@ export class CatalogController {
       created_at: pub.created_at,
       condition,
       saleType,
+      discount,
+      discountMode,
+      promoLabel,
       price,
       compareAt,
       status: product?.status || null,
@@ -198,10 +210,7 @@ export class CatalogController {
       categories.set(key, current);
     }
 
-    const now = Date.now();
-    const recent = rows.filter((row) => now - new Date(row.pub.created_at).getTime() <= 14 * 24 * 60 * 60 * 1000);
-    const source = recent.length ? recent : rows;
-    const items = source.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
+    const items = rows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
 
     return { items, categories: Array.from(categories.values()) };
   }

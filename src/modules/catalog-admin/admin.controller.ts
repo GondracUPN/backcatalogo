@@ -225,7 +225,7 @@ export class AdminController {
     const where: any = {};
     if (q) where.title = ILike(`%${q}%`);
     if (status) where.status = status;
-    else where.status = Not('published' as any);
+    else where.status = Not(In(['published', 'hidden'] as any) as any);
     const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
     const options: any = { where, order: { updated_at: 'DESC' as any } };
     if (!allRows) {
@@ -743,6 +743,248 @@ export class AdminController {
       if (staged) await this.stagedRepo.update({ id: staged.id }, { status: 'draft' as any });
     }
     return { ok: true };
+  }
+
+  @Post('public/:productId/replace-preventa')
+  async replacePreventa(
+    @Headers('authorization') authHeader: string,
+    @Param('productId') productId: string,
+    @Body() body: any,
+  ) {
+    this.requireAdmin(authHeader);
+    await this.ensureCartAvailable();
+
+    const replacementStagedId = String(body?.stagedId || body?.replacementStagedId || '').trim();
+    if (!replacementStagedId) throw new BadRequestException('replacement staged required');
+
+    const currentProduct = await this.productRepo.findOne({ where: { id: productId } });
+    if (!currentProduct) throw new BadRequestException('product not found');
+    const currentPublic = await this.publicRepo.findOne({ where: { product_id: productId } });
+    if (!currentPublic || !currentPublic.is_published) throw new BadRequestException('published product not found');
+
+    const currentStaged = currentProduct.sku
+      ? await this.stagedRepo.findOne({ where: { sku: currentProduct.sku } })
+      : null;
+    const currentSaleType = String(currentStaged?.sale_type || currentProduct.sale_type || '').toUpperCase();
+    if (currentSaleType !== 'PREVENTA') throw new BadRequestException('product is not preventa');
+
+    const replacement = await this.stagedRepo.findOne({ where: { id: replacementStagedId } });
+    if (!replacement) throw new BadRequestException('replacement not found');
+    if (String(replacement.id) === String(currentStaged?.id || '')) {
+      throw new BadRequestException('replacement must be different');
+    }
+    if (['published', 'sold'].includes(String(replacement.status || '').toLowerCase())) {
+      throw new BadRequestException('replacement is not available');
+    }
+
+    const currentNotesForMerge = parseNotes(currentStaged?.notes);
+    const replacementNotesForMerge = parseNotes(replacement.notes);
+    const firstFilled = (...values: unknown[]) => {
+      for (const value of values) {
+        if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+      }
+      return null;
+    };
+    const firstValidProductCondition = (...values: unknown[]) => {
+      for (const value of values) {
+        const raw = String(value ?? '').trim();
+        if (PRODUCT_CONDITIONS.has(raw)) return raw;
+      }
+      return '';
+    };
+    const mergedBatteryCycles = firstFilled(
+      replacement.battery_cycles,
+      currentStaged?.battery_cycles,
+      replacementNotesForMerge?.batteryCycles,
+      currentNotesForMerge?.batteryCycles,
+      replacementNotesForMerge?.bateria?.ciclos,
+      currentNotesForMerge?.bateria?.ciclos,
+    );
+    const mergedBatteryHealth = firstFilled(
+      replacement.battery_health,
+      currentStaged?.battery_health,
+      replacementNotesForMerge?.batteryHealth,
+      currentNotesForMerge?.batteryHealth,
+      replacementNotesForMerge?.bateria?.salud,
+      currentNotesForMerge?.bateria?.salud,
+    );
+    const mergedIncludes = firstFilled(replacement.includes, currentStaged?.includes, replacementNotesForMerge?.includes, currentNotesForMerge?.includes);
+    let mergedProductCondition = firstValidProductCondition(
+      replacement.product_condition,
+      currentStaged?.product_condition,
+      replacementNotesForMerge?.productCondition,
+      currentNotesForMerge?.productCondition,
+      replacementNotesForMerge?.estado,
+      currentNotesForMerge?.estado,
+      replacementNotesForMerge?.specs?.estado,
+      currentNotesForMerge?.specs?.estado,
+    ) || 'Nuevo';
+    if (mergedProductCondition !== 'Nuevo' && (!mergedBatteryHealth || !mergedIncludes)) {
+      mergedProductCondition = 'Nuevo';
+    }
+    const mergedDetail = {
+      ...(currentNotesForMerge?.specs?.detalle || {}),
+      ...(currentNotesForMerge?.detalle || {}),
+      ...(replacementNotesForMerge?.specs?.detalle || {}),
+      ...(replacementNotesForMerge?.detalle || {}),
+    };
+    const mergedSpecs = {
+      ...(currentNotesForMerge?.specs || {}),
+      ...(replacementNotesForMerge?.specs || {}),
+      detalle: mergedDetail,
+    };
+    const mergedNotes = {
+      ...(currentNotesForMerge || {}),
+      ...(replacementNotesForMerge || {}),
+      specs: {
+        ...mergedSpecs,
+        estado: mergedProductCondition,
+      },
+      detalle: mergedDetail,
+      productCondition: mergedProductCondition,
+      estado: mergedProductCondition,
+      batteryCycles: mergedBatteryCycles,
+      batteryHealth: mergedBatteryHealth,
+      bateria: { ...(currentNotesForMerge?.bateria || {}), ...(replacementNotesForMerge?.bateria || {}), ciclos: mergedBatteryCycles, salud: mergedBatteryHealth },
+      includes: mergedIncludes,
+      saleType: null,
+      preventaDateFrom: null,
+      preventaDateTo: null,
+      preventa: null,
+      replacedPreventaProductId: productId,
+      replacedPreventaSku: currentProduct.sku,
+    };
+    const mergedImages = (Array.isArray(replacement.images) && replacement.images.length)
+      ? replacement.images
+      : ((Array.isArray(currentPublic.images) && currentPublic.images.length)
+        ? currentPublic.images
+        : (Array.isArray(currentStaged?.images) ? currentStaged.images : []));
+    const replacementSaleTypeRaw = String(replacement.sale_type || '').toUpperCase();
+    const replacementSaleType = SALE_TYPES.has(replacementSaleTypeRaw) && replacementSaleTypeRaw !== 'PREVENTA'
+      ? replacementSaleTypeRaw
+      : 'VENTA_SIMPLE';
+    const replacementTitle = String(firstFilled(replacement.title, currentProduct.title, currentStaged?.title) || '')
+      .replace(/^preventa\s+/i, '')
+      .trim();
+    const stagedForValidation = {
+      ...replacement,
+      category: firstFilled(replacement.category, currentStaged?.category) as any,
+      title: replacementTitle || replacement.title,
+      sale_type: replacementSaleType,
+      product_condition: mergedProductCondition as any,
+      iphone_model: firstFilled(replacement.iphone_model, currentStaged?.iphone_model, replacementNotesForMerge?.iphoneModel, currentNotesForMerge?.iphoneModel) as any,
+      iphone_number: firstFilled(replacement.iphone_number, currentStaged?.iphone_number, replacementNotesForMerge?.iphoneNumber, currentNotesForMerge?.iphoneNumber) as any,
+      storage_gb: firstFilled(replacement.storage_gb, currentStaged?.storage_gb, replacementNotesForMerge?.storageGb, currentNotesForMerge?.storageGb, replacementNotesForMerge?.storage, currentNotesForMerge?.storage) as any,
+      battery_cycles: mergedBatteryCycles as any,
+      battery_health: mergedBatteryHealth as any,
+      color: firstFilled(replacement.color, currentStaged?.color, replacementNotesForMerge?.color, currentNotesForMerge?.color) as any,
+      includes: mergedIncludes as any,
+      includes_extra: firstFilled(replacement.includes_extra, currentStaged?.includes_extra, replacementNotesForMerge?.includesExtra, currentNotesForMerge?.includesExtra) as any,
+      keyboard_layout: firstFilled(replacement.keyboard_layout, currentStaged?.keyboard_layout) as any,
+      variant_group: firstFilled(replacement.variant_group, currentStaged?.variant_group, replacementNotesForMerge?.variantGroup, currentNotesForMerge?.variantGroup) as any,
+      images: mergedImages,
+      notes: stringifyNotes(mergedNotes),
+    } as StagedProduct;
+    const validation = validateProductBeforePublish(stagedForValidation);
+    if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
+
+    const salePrice = Number(firstFilled(replacement.price, currentProduct.price, currentStaged?.price, 0) ?? 0);
+    const notes = parseNotes(stagedForValidation.notes);
+    let finalPrice = replacement.final_price ? Number(replacement.final_price) : null;
+    if (replacementSaleType === 'PROMOCION') {
+      const d = Number(replacement.discount || 0);
+      const computed = promotionFinalPrice(salePrice, d, promotionDiscountMode(notes));
+      finalPrice = isFinite(computed) ? computed : null;
+    }
+    if (replacementSaleType === 'VENTA_SIMPLE' || replacementSaleType === 'OFERTA') finalPrice = null;
+
+    await this.productRepo.upsert(
+      {
+        sku: replacement.sku,
+        title: replacementTitle || replacement.title,
+        price: String(salePrice ?? '0'),
+        sale_type: asSaleType(replacementSaleType),
+        discount: replacementSaleType === 'PROMOCION' ? replacement.discount || null : null,
+        final_price: finalPrice !== null ? String(finalPrice) : null,
+        min_offer_price: replacementSaleType === 'OFERTA' ? replacement.min_offer_price || null : null,
+        product_condition: asProductCondition(stagedForValidation.product_condition || null),
+        iphone_model: asIphoneModel(stagedForValidation.iphone_model || null),
+        iphone_number: stagedForValidation.iphone_number ?? null,
+        storage_gb: stagedForValidation.storage_gb ?? null,
+        battery_cycles: stagedForValidation.battery_cycles ?? null,
+        battery_health: stagedForValidation.battery_health ?? null,
+        color: stagedForValidation.color ?? null,
+        includes: asIncludesKind(stagedForValidation.includes || null),
+        includes_extra: stagedForValidation.includes_extra || null,
+        keyboard_layout: asKeyboardLayout(stagedForValidation.keyboard_layout || null),
+        variant_group: stagedForValidation.variant_group || null,
+        status: 'listed' as any,
+        stock: Number(stagedForValidation.stock ?? 1),
+      },
+      { conflictPaths: ['sku'] },
+    );
+    const replacementProduct = await this.productRepo.findOne({ where: { sku: replacement.sku } });
+    if (!replacementProduct) throw new BadRequestException('replacement product not created');
+
+    const requestedSlug = String(body?.slug || '').trim();
+    const variantGroup = String(replacement.variant_group || '').trim();
+    const baseSlug = variantGroup
+      ? slugify(`${requestedSlug || variantGroup}-${replacement.sku}`)
+      : slugify(requestedSlug || replacementTitle || replacement.title);
+    let slug = baseSlug || 'producto';
+    let tries = 1;
+    while (true) {
+      const existing = await this.publicRepo.findOne({ where: { slug } });
+      if (!existing || existing.id === currentPublic.id || existing.product_id === replacementProduct.id) break;
+      tries += 1;
+      slug = `${baseSlug}-${tries}`;
+      if (tries > 100) throw new BadRequestException('slug already in use');
+    }
+
+    const existingReplacementPublic = await this.publicRepo.findOne({ where: { product_id: replacementProduct.id } });
+    if (existingReplacementPublic && existingReplacementPublic.id !== currentPublic.id) {
+      await this.publicRepo.delete({ id: existingReplacementPublic.id });
+    }
+    await this.publicRepo.update(
+      { id: currentPublic.id },
+      {
+        product_id: replacementProduct.id,
+        slug,
+        is_published: true,
+        category: stagedForValidation.category || currentPublic.category || null,
+        tags: replacement.tags || currentStaged?.tags || null,
+        images: mergedImages,
+      },
+    );
+
+    await this.stagedRepo.update(
+      { id: replacement.id },
+      {
+        status: 'published' as any,
+        title: replacementTitle || replacement.title,
+        sale_type: replacementSaleType,
+        category: stagedForValidation.category || replacement.category || null,
+        images: mergedImages,
+        product_condition: stagedForValidation.product_condition || null,
+        iphone_model: stagedForValidation.iphone_model || null,
+        iphone_number: stagedForValidation.iphone_number ?? null,
+        storage_gb: stagedForValidation.storage_gb ?? null,
+        battery_cycles: stagedForValidation.battery_cycles ?? null,
+        battery_health: stagedForValidation.battery_health ?? null,
+        color: stagedForValidation.color || null,
+        includes: stagedForValidation.includes || null,
+        includes_extra: stagedForValidation.includes_extra || null,
+        keyboard_layout: stagedForValidation.keyboard_layout || null,
+        variant_group: stagedForValidation.variant_group || null,
+        notes: stagedForValidation.notes,
+      },
+    );
+    await this.productRepo.update({ id: currentProduct.id }, { status: 'hidden' as any, stock: 0 });
+    if (currentStaged) {
+      await this.stagedRepo.delete({ id: currentStaged.id });
+    }
+
+    return { ok: true, productId: replacementProduct.id, slug };
   }
 
   @Post('public/:productId/sold')
