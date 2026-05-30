@@ -210,7 +210,8 @@ export class AdminController {
       if (status) {
         items = items.filter((item: any) => String(item?.status || '') === String(status));
       } else {
-        items = items.filter((item: any) => String(item?.status || '').toLowerCase() !== 'published');
+        const hiddenFromInventory = new Set(['published', 'hidden', 'sold']);
+        items = items.filter((item: any) => !hiddenFromInventory.has(String(item?.status || '').toLowerCase()));
       }
       const total = items.length;
       const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
@@ -225,7 +226,7 @@ export class AdminController {
     const where: any = {};
     if (q) where.title = ILike(`%${q}%`);
     if (status) where.status = status;
-    else where.status = Not(In(['published', 'hidden'] as any) as any);
+    else where.status = Not(In(['published', 'hidden', 'sold'] as any) as any);
     const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
     const options: any = { where, order: { updated_at: 'DESC' as any } };
     if (!allRows) {
@@ -888,7 +889,7 @@ export class AdminController {
     const validation = validateProductBeforePublish(stagedForValidation);
     if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
-    const salePrice = Number(firstFilled(replacement.price, currentProduct.price, currentStaged?.price, 0) ?? 0);
+    const salePrice = Number(firstFilled(currentProduct.price, currentStaged?.price, replacement.price, 0) ?? 0);
     const notes = parseNotes(stagedForValidation.notes);
     let finalPrice = replacement.final_price ? Number(replacement.final_price) : null;
     if (replacementSaleType === 'PROMOCION') {
@@ -962,6 +963,7 @@ export class AdminController {
       {
         status: 'published' as any,
         title: replacementTitle || replacement.title,
+        price: String(salePrice ?? '0'),
         sale_type: replacementSaleType,
         category: stagedForValidation.category || replacement.category || null,
         images: mergedImages,
@@ -1071,8 +1073,10 @@ export class AdminController {
     const customerKindRaw = String(body?.customerKind || '').trim();
     const customerKind = ['tranquilo', 'regateador'].includes(customerKindRaw) ? customerKindRaw : 'tranquilo';
     const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
-    const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : 'almacen';
-    const saleLocation = salePlaceType === 'otro' ? (String(body?.saleLocation || '').trim() || '-') : 'Almacen';
+    const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : null;
+    const saleLocation = salePlaceType === 'otro'
+      ? (String(body?.saleLocation || '').trim() || null)
+      : null;
     const mgr = this.productRepo.manager;
     await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
       id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -1124,8 +1128,8 @@ export class AdminController {
         customerName,
         customerPhone,
         customerKind,
-        salePlaceType,
-        saleLocation,
+        salePlaceType || null,
+        saleLocation || null,
         soldAt,
       ],
     );
@@ -1243,7 +1247,6 @@ export class AdminController {
       FROM sold_records sr
       LEFT JOIN products p ON p.id = sr.product_id
       ORDER BY sr.sold_at DESC, sr.created_at DESC
-      LIMIT 500
     `);
     return { items: rows };
   }
@@ -1351,6 +1354,73 @@ export class AdminController {
     return { items: rows };
   }
 
+  @Put('possible-clients/:id')
+  async updatePossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
+    this.requireAdmin(authHeader);
+    await this.ensurePossibleClientsTable();
+    const mgr = this.productRepo.manager;
+    const currentRows = await mgr.query(`SELECT * FROM possible_clients WHERE id = $1 LIMIT 1`, [id]);
+    const current = currentRows?.[0];
+    if (!current) throw new BadRequestException('possible client not found');
+
+    const firstFilled = (...values: unknown[]) => {
+      for (const value of values) {
+        if (value !== undefined && value !== null) return value;
+      }
+      return null;
+    };
+    const customerName = String(firstFilled(body?.customerName, body?.customer_name, current.customer_name) || '').trim();
+    const customerPhone = String(firstFilled(body?.customerPhone, body?.customer_phone, current.customer_phone) || '').replace(/\D+/g, '');
+    if (!customerName) throw new BadRequestException('customer name required');
+    if (!customerPhone) throw new BadRequestException('customer phone required');
+
+    const productPriceRaw = firstFilled(body?.productPrice, body?.product_price, current.product_price, 0);
+    const productPrice = Number(productPriceRaw || 0);
+    const customerKind = String(firstFilled(body?.customerKind, body?.customer_kind, current.customer_kind, '') || '').trim();
+    const salePlaceType = String(firstFilled(body?.salePlaceType, body?.sale_place_type, current.sale_place_type, '') || '').trim();
+    const saleLocationRaw = String(firstFilled(body?.saleLocation, body?.sale_location, current.sale_location, '') || '').trim();
+    const saleLocation = salePlaceType === 'otro' ? saleLocationRaw : '';
+
+    if (customerKind && !['tranquilo', 'regateador'].includes(customerKind)) throw new BadRequestException('invalid customer kind');
+    if (salePlaceType && !['almacen', 'otro'].includes(salePlaceType)) throw new BadRequestException('invalid sale place');
+    if (salePlaceType === 'otro' && !saleLocation) throw new BadRequestException('sale location required');
+
+    const rows = await mgr.query(
+      `
+      UPDATE possible_clients
+      SET request_type = $2,
+          product_title = $3,
+          product_color = $4,
+          product_price = $5,
+          customer_name = $6,
+          customer_phone = $7,
+          location_scope = $8,
+          location_value = $9,
+          customer_kind = $10,
+          sale_place_type = $11,
+          sale_location = $12,
+          updated_at = now()
+      WHERE id = $1
+      RETURNING *
+      `,
+      [
+        id,
+        String(firstFilled(body?.requestType, body?.request_type, current.request_type, '') || '').trim() || null,
+        String(firstFilled(body?.productTitle, body?.product_title, current.product_title, '') || '').trim() || null,
+        String(firstFilled(body?.productColor, body?.product_color, current.product_color, '') || '').trim() || null,
+        Number.isFinite(productPrice) ? productPrice : 0,
+        customerName,
+        customerPhone,
+        String(firstFilled(body?.locationScope, body?.location_scope, current.location_scope, '') || '').trim() || null,
+        String(firstFilled(body?.locationValue, body?.location_value, current.location_value, '') || '').trim() || null,
+        customerKind || null,
+        salePlaceType || null,
+        saleLocation || null,
+      ],
+    );
+    return { ok: true, item: rows[0] };
+  }
+
   @Post('possible-clients/:id/discard')
   async discardPossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string) {
     this.requireAdmin(authHeader);
@@ -1364,10 +1434,10 @@ export class AdminController {
     this.requireAdmin(authHeader);
     await this.ensurePossibleClientsTable();
     const customerKind = String(body?.customerKind || '').trim();
-    const salePlaceType = String(body?.salePlaceType || '').trim();
+    const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
+    const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : null;
     const saleLocation = String(body?.saleLocation || '').trim();
     if (!['tranquilo', 'regateador'].includes(customerKind)) throw new BadRequestException('invalid customer kind');
-    if (!['almacen', 'otro'].includes(salePlaceType)) throw new BadRequestException('invalid sale place');
     if (salePlaceType === 'otro' && !saleLocation) throw new BadRequestException('sale location required');
 
     const rows = await this.productRepo.manager.query(
@@ -1382,7 +1452,7 @@ export class AdminController {
       WHERE id = $1
       RETURNING *
       `,
-      [id, customerKind, salePlaceType, salePlaceType === 'otro' ? saleLocation : 'Almacen'],
+      [id, customerKind, salePlaceType, salePlaceType === 'otro' ? saleLocation : null],
     );
     if (!rows?.[0]) throw new BadRequestException('possible client not found');
     return { ok: true, item: rows[0] };

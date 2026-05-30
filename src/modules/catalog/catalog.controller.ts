@@ -210,7 +210,17 @@ export class CatalogController {
       categories.set(key, current);
     }
 
-    const items = rows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
+    const bestRows = [...rows].sort((a, b) => {
+      const aMeta = this.priceMeta(a.product, a.staged);
+      const bMeta = this.priceMeta(b.product, b.staged);
+      const aPromo = aMeta.saleType === 'PROMOCION' || (Number(aMeta.compareAt || 0) > Number(aMeta.price || 0) && Number(aMeta.price || 0) > 0) ? 1 : 0;
+      const bPromo = bMeta.saleType === 'PROMOCION' || (Number(bMeta.compareAt || 0) > Number(bMeta.price || 0) && Number(bMeta.price || 0) > 0) ? 1 : 0;
+      const aTime = new Date(a.pub.created_at || 0).getTime() || 0;
+      const bTime = new Date(b.pub.created_at || 0).getTime() || 0;
+      return bPromo - aPromo || bTime - aTime;
+    });
+
+    const items = bestRows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
 
     return { items, categories: Array.from(categories.values()) };
   }

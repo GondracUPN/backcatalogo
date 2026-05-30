@@ -271,24 +271,28 @@ export class CartController {
     const stagedBySku = skus.length ? await this.staged.findBy({ sku: In(skus) }) : [];
     const stagedBySkuMap = new Map(stagedBySku.map((s) => [s.sku, s] as const));
 
-    const first = rows[0];
-    const firstProduct = productById.get(first.product_id) || null;
-    const firstStaged = firstProduct?.sku ? stagedBySkuMap.get(firstProduct.sku) || null : null;
-    const productTitle = String(firstProduct?.title || firstStaged?.title || 'Producto').trim();
-    const productColor = this.resolveRowColor(firstProduct, firstStaged) || null;
-    const productPrice = this.resolveRowPrice(first, firstProduct, firstStaged);
-    const requestType = this.resolveRequestType(first, firstProduct, firstStaged);
-
     const itemSummary = rows.map((row) => {
       const product = productById.get(row.product_id) || null;
       const staged = product?.sku ? stagedBySkuMap.get(product.sku) || null : null;
+      const price = this.resolveRowPrice(row, product, staged);
       return {
         productId: row.product_id,
-        title: String(product?.title || staged?.title || 'Producto'),
+        title: String(product?.title || staged?.title || 'Producto').trim(),
+        color: this.resolveRowColor(product, staged) || null,
         qty: Number(row.qty || 1),
-        price: this.resolveRowPrice(row, product, staged),
+        price,
+        lineTotal: price * Number(row.qty || 1),
       };
     });
+    const first = rows[0];
+    const firstProduct = productById.get(first.product_id) || null;
+    const firstStaged = firstProduct?.sku ? stagedBySkuMap.get(firstProduct.sku) || null : null;
+    const productTitle = itemSummary
+      .map((item) => `${item.qty > 1 ? `${item.qty} x ` : ''}${item.title}${item.color ? ` ${item.color}` : ''}`.trim())
+      .join(' | ');
+    const productColor = itemSummary.length === 1 ? itemSummary[0]?.color || null : null;
+    const productPrice = itemSummary.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+    const requestType = this.resolveRequestType(first, firstProduct, firstStaged);
 
     await this.ensureContactRequestsTable();
     const metadata = {
