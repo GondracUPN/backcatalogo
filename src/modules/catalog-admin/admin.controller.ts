@@ -90,8 +90,19 @@ function promotionFinalPrice(price: number, discount: number, mode: string) {
   return +Math.max(0, computed).toFixed(2);
 }
 
+function saleDateValue(value: unknown, fallback = new Date()) {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(raw)
+    ? new Date(`${raw}T12:00:00`)
+    : new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 @Controller('admin')
 export class AdminController {
+  private soldRecordsReady: Promise<void> | null = null;
+
   constructor(
     private auth: AuthService,
     @InjectRepository(StagedProduct) private stagedRepo: Repository<StagedProduct>,
@@ -112,6 +123,31 @@ export class AdminController {
   private async ensureCartAvailable() {
     const rows = await this.productRepo.manager.query(`SELECT to_regclass('public.cart_items') as name`);
     if (!rows?.[0]?.name) throw new BadRequestException('cart not available');
+  }
+
+  private ensureSoldRecordsTable() {
+    if (!this.soldRecordsReady) {
+      const mgr = this.productRepo.manager;
+      this.soldRecordsReady = (async () => {
+        await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
+          id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+          product_id uuid NOT NULL,
+          sku text,
+          sale_price numeric(12,2) NOT NULL DEFAULT 0,
+          sold_at timestamptz NOT NULL DEFAULT now(),
+          created_at timestamptz NOT NULL DEFAULT now()
+        )`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
+      })().catch((error) => {
+        this.soldRecordsReady = null;
+        throw error;
+      });
+    }
+    return this.soldRecordsReady;
   }
 
   private async ensureContactRequestsTable() {
@@ -449,11 +485,8 @@ export class AdminController {
     if (publishTitle !== staged.title) {
       await this.stagedRepo.update({ id }, { title: publishTitle });
     }
-    const variantGroup = String(staged.variant_group || '').trim();
     const requestedSlug = String(body?.slug || '').trim();
-    const baseSlug = variantGroup
-      ? slugify(`${requestedSlug || variantGroup}-${staged.sku}`)
-      : slugify(requestedSlug || publishTitle);
+    const baseSlug = slugify(requestedSlug || publishTitle);
     // 1) Asegurar que el producto principal tenga el precio final elegido
     await this.productRepo.upsert(
       {
@@ -710,8 +743,7 @@ export class AdminController {
           { conflictPaths: ['sku'] },
         );
         const product = await this.productRepo.findOne({ where: { sku: s.sku } });
-        const variantGroup = String(s.variant_group || '').trim();
-        const baseSlug = variantGroup ? slugify(`${variantGroup}-${s.sku}`) : slugify(publishTitle);
+        const baseSlug = slugify(publishTitle);
         // Resolver slug único por cada item
         let slug = baseSlug || 'producto';
         let tries = 1;
@@ -928,10 +960,7 @@ export class AdminController {
     if (!replacementProduct) throw new BadRequestException('replacement product not created');
 
     const requestedSlug = String(body?.slug || '').trim();
-    const variantGroup = String(replacement.variant_group || '').trim();
-    const baseSlug = variantGroup
-      ? slugify(`${requestedSlug || variantGroup}-${replacement.sku}`)
-      : slugify(requestedSlug || replacementTitle || replacement.title);
+    const baseSlug = slugify(requestedSlug || replacementTitle || replacement.title);
     let slug = baseSlug || 'producto';
     let tries = 1;
     while (true) {
@@ -1057,7 +1086,8 @@ export class AdminController {
       await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any });
     }
     // Registrar venta en tabla auxiliar (auto-creación si no existe)
-    const soldAt = body?.saleDate ? new Date(body.saleDate) : new Date();
+    const soldAt = saleDateValue(body?.saleDate);
+    if (!soldAt) throw new BadRequestException('invalid sale date');
     const sku = soldUnitSku;
     const explicitSalePrice = body?.salePrice;
     const parsedSalePrice =
@@ -1078,19 +1108,7 @@ export class AdminController {
       ? (String(body?.saleLocation || '').trim() || null)
       : null;
     const mgr = this.productRepo.manager;
-    await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
-      id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-      product_id uuid NOT NULL,
-      sku text,
-      sale_price numeric(12,2) NOT NULL DEFAULT 0,
-      sold_at timestamptz NOT NULL DEFAULT now(),
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
+    await this.ensureSoldRecordsTable();
     await mgr.query(
       `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -1146,14 +1164,7 @@ export class AdminController {
     // Restaurar estado del producto a 'listed' para volver a catálogo
     // Eliminar registros de venta asociados
     const mgr = this.productRepo.manager;
-    await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
-      id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-      product_id uuid NOT NULL,
-      sku text,
-      sale_price numeric(12,2) NOT NULL DEFAULT 0,
-      sold_at timestamptz NOT NULL DEFAULT now(),
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
+    await this.ensureSoldRecordsTable();
     const saleId = String(body?.saleId || '').trim();
     const records = saleId
       ? await mgr.query(`SELECT * FROM sold_records WHERE id = $1 AND product_id = $2 LIMIT 1`, [saleId, productId])
@@ -1229,19 +1240,7 @@ export class AdminController {
   async listSales(@Headers('authorization') authHeader: string) {
     this.requireAdmin(authHeader);
     const mgr = this.productRepo.manager;
-    await mgr.query(`CREATE TABLE IF NOT EXISTS sold_records (
-      id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-      product_id uuid NOT NULL,
-      sku text,
-      sale_price numeric(12,2) NOT NULL DEFAULT 0,
-      sold_at timestamptz NOT NULL DEFAULT now(),
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
-    await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
+    await this.ensureSoldRecordsTable();
     const rows = await mgr.query(`
       SELECT sr.*, p.title
       FROM sold_records sr
@@ -1249,6 +1248,36 @@ export class AdminController {
       ORDER BY sr.sold_at DESC, sr.created_at DESC
     `);
     return { items: rows };
+  }
+
+  @Put('sales/:saleId')
+  async updateSale(
+    @Headers('authorization') authHeader: string,
+    @Param('saleId') saleId: string,
+    @Body() body: any,
+  ) {
+    this.requireAdmin(authHeader);
+    const mgr = this.productRepo.manager;
+    await this.ensureSoldRecordsTable();
+
+    const currentRows = await mgr.query(`SELECT * FROM sold_records WHERE id = $1 LIMIT 1`, [saleId]);
+    const current = currentRows[0];
+    if (!current) throw new BadRequestException('sale not found');
+
+    const salePrice = Number(body?.salePrice);
+    if (!Number.isFinite(salePrice) || salePrice < 0) throw new BadRequestException('invalid sale price');
+    const soldAt = saleDateValue(body?.saleDate, new Date(current.sold_at));
+    if (!soldAt) throw new BadRequestException('invalid sale date');
+    const rows = await mgr.query(
+      `UPDATE sold_records
+       SET sale_price = $1,
+           sold_at = $2
+       WHERE id = $3
+       RETURNING *`,
+      [salePrice, soldAt, saleId],
+    );
+    const product = await this.productRepo.findOne({ where: { id: current.product_id } });
+    return { ok: true, item: { ...rows[0], title: product?.title || null } };
   }
 
   @Get('contact-requests')

@@ -32,6 +32,100 @@ export class CatalogController {
     }
   }
 
+  private publicNotes(staged: StagedProduct | null) {
+    const notes = this.parseNotes(staged);
+    const specs = notes?.specs || {};
+    const sourceDetail = specs?.detalle || notes?.detalle || {};
+    const detailKeys = [
+      'gama', 'procesador', 'generacion', 'numero', 'modelo',
+      'tamaño', 'tamanio', 'tamano', 'almacenamiento', 'ram',
+      'conexion', 'conectividad', 'esim', 'sim', 'descripcionOtro',
+      'detalles', 'productDetails', 'detailImages',
+    ];
+    const detail = Object.fromEntries(
+      detailKeys
+        .filter((key) => sourceDetail?.[key] !== undefined)
+        .map((key) => [key, sourceDetail[key]]),
+    );
+    const publicKeys = [
+      'saleType', 'discount', 'discountMode', 'discountType', 'finalPrice',
+      'precioLista', 'descuentoPorc', 'color', 'batteryHealth', 'batteryCycles',
+      'bateria', 'iphoneModel', 'iphoneNumber', 'storageGb', 'storage',
+      'iphoneSimType', 'simType', 'chipType', 'preventaDateFrom', 'preventaDateTo',
+      'preventa', 'warrantyDate', 'warrantyEnabled', 'garantiaFecha', 'garantia',
+      'garantiaActiva', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
+      'watchConnection', 'watchAccessories', 'watchIncludes', 'productCondition',
+      'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
+      'productDetails', 'detalles', 'detailImages', 'detailPhotos',
+    ];
+    const result = Object.fromEntries(
+      publicKeys
+        .filter((key) => notes?.[key] !== undefined)
+        .map((key) => [key, notes[key]]),
+    ) as any;
+    result.detalle = detail;
+    result.specs = {
+      tipo: specs?.tipo ?? null,
+      estado: specs?.estado ?? notes?.estado ?? null,
+      sim: specs?.sim ?? detail?.sim ?? detail?.esim ?? null,
+      conCaja: specs?.conCaja ?? null,
+      detalle: detail,
+    };
+    return result;
+  }
+
+  private publicProduct(product: CatalogProduct | null) {
+    if (!product) return null;
+    return {
+      id: product.id,
+      title: product.title,
+      price: product.price,
+      iphone_model: product.iphone_model,
+      iphone_number: product.iphone_number,
+      storage_gb: product.storage_gb,
+      battery_cycles: product.battery_cycles,
+      battery_health: product.battery_health,
+      color: product.color,
+      includes: product.includes,
+      includes_extra: product.includes_extra,
+      keyboard_layout: product.keyboard_layout,
+      sale_type: product.sale_type,
+      discount: product.discount,
+      final_price: product.final_price,
+      min_offer_price: product.min_offer_price,
+      status: product.status,
+      product_condition: product.product_condition,
+      stock: product.stock,
+    };
+  }
+
+  private publicStaged(staged: StagedProduct | null) {
+    if (!staged) return null;
+    return {
+      title: staged.title,
+      price: staged.price,
+      iphone_model: staged.iphone_model,
+      iphone_number: staged.iphone_number,
+      storage_gb: staged.storage_gb,
+      battery_cycles: staged.battery_cycles,
+      battery_health: staged.battery_health,
+      color: staged.color,
+      includes: staged.includes,
+      includes_extra: staged.includes_extra,
+      keyboard_layout: staged.keyboard_layout,
+      sale_type: staged.sale_type,
+      discount: staged.discount,
+      final_price: staged.final_price,
+      min_offer_price: staged.min_offer_price,
+      stock: staged.stock,
+      status: staged.status,
+      product_condition: staged.product_condition,
+      category: staged.category,
+      images: staged.images,
+      notes: this.publicNotes(staged),
+    };
+  }
+
   private priceMeta(product: CatalogProduct | undefined, staged: StagedProduct | undefined) {
     const notes = this.parseNotes(staged);
     const saleType = String(product?.sale_type || staged?.sale_type || notes?.saleType || '').toUpperCase();
@@ -227,7 +321,21 @@ export class CatalogController {
 
   @Get(':slug')
   async getOne(@Param('slug') slug: string) {
-    const pub = await this.publicRepo.findOne({ where: { slug, is_published: true as any } });
+    let pub = await this.publicRepo.findOne({ where: { slug, is_published: true as any } });
+    if (!pub) {
+      const legacySku = slug.match(/-(svc-\d+)$/i)?.[1];
+      if (legacySku) {
+        const legacyProduct = await this.productRepo
+          .createQueryBuilder('product')
+          .where('LOWER(product.sku) = LOWER(:sku)', { sku: legacySku })
+          .getOne();
+        if (legacyProduct) {
+          pub = await this.publicRepo.findOne({
+            where: { product_id: legacyProduct.id, is_published: true as any },
+          });
+        }
+      }
+    }
     if (!pub) throw new NotFoundException('not found');
     const product = await this.productRepo.findOne({ where: { id: pub.product_id } });
     let staged: StagedProduct | null = null;
@@ -271,7 +379,18 @@ export class CatalogController {
       .filter(Boolean)
       .sort((a: any, b: any) => String(a.variantLabel || a.title).localeCompare(String(b.variantLabel || b.title)));
 
-    return { item: { ...pub, product, staged, variants } };
+    return {
+      item: {
+        id: pub.id,
+        product_id: pub.product_id,
+        slug: pub.slug,
+        category: pub.category,
+        images: pub.images,
+        product: this.publicProduct(product),
+        staged: this.publicStaged(staged),
+        variants,
+      },
+    };
   }
 
   @Post('views')

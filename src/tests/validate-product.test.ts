@@ -124,5 +124,25 @@ const ipad13Screen = {
 const resIpad13Screen = validateProductBeforePublish(ipad13Screen);
 assert(resIpad13Screen.ok, `expected ok with iPad 13 screen, got errors: ${resIpad13Screen.errors.join(', ')}`);
 
+const ipad11Normal = {
+  ...ipad13Screen,
+  title: 'iPad 11 WiFi',
+  notes: JSON.stringify({
+    color: 'Silver',
+    includes: 'Caja + Cable',
+    specs: {
+      detalle: {
+        tamaño: '11',
+        generacion: '11',
+        gama: 'Normal',
+        almacenamiento: '128 GB',
+        conectividad: 'WiFi',
+      },
+    },
+  }),
+} as StagedProduct;
+const resIpad11Normal = validateProductBeforePublish(ipad11Normal);
+assert(resIpad11Normal.ok, `expected normal iPad 11 without processor to be valid, got errors: ${resIpad11Normal.errors.join(', ')}`);
+
 // eslint-disable-next-line no-console
 console.log('validate-product.test.ts ok');

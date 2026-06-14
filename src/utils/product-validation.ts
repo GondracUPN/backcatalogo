@@ -155,10 +155,14 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
   if (category === 'ipad') {
     const screen = String(detalle?.['tamaño'] || detalle?.tamanio || detalle?.tamano || '').trim();
     const conn = String(detalle?.conectividad || '').trim();
+    const gama = String(detalle?.gama || '').trim();
+    const generacion = String(detalle?.generacion || '').trim();
+    const procesador = String(detalle?.procesador || '').trim();
     if (!screen) errors.push('tamano de pantalla requerido');
     if (screen && !isAllowedScreenSize(screen, 'ipad')) errors.push('tamano de pantalla invalido');
-    if (!String(detalle?.procesador || '').trim()) errors.push('procesador requerido');
-    if (!String(detalle?.gama || '').trim()) errors.push('gama requerida');
+    if (!gama) errors.push('gama requerida');
+    if ((gama === 'Air' || gama === 'Pro') && !procesador) errors.push('procesador requerido');
+    if ((gama === 'Normal' || gama === 'Mini') && !generacion) errors.push('generacion requerida');
     if (!String(detalle?.almacenamiento || '').trim()) errors.push('almacenamiento requerido');
     if (!conn) errors.push('conectividad requerida');
     if (conn && !IPAD_CONNECTIVITY.has(conn)) errors.push('conectividad invalida');
