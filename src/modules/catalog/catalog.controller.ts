@@ -224,7 +224,7 @@ export class CatalogController {
     return this.publicRepo.find({
       where: { product_id: In(ids), is_published: true as any },
       order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
-      take: 120,
+      take: 40,
     });
   }
 
@@ -246,7 +246,7 @@ export class CatalogController {
     return ids;
   }
 
-  private async findVariantPubs(params: { variantGroup?: string; title?: string; category?: string | null }) {
+  private async findVariantPubs(params: { variantGroup?: string; title?: string }) {
     const byId = new Map<string, CatalogPublic>();
     const addPubs = (pubs: CatalogPublic[]) => {
       for (const row of pubs) byId.set(row.id, row);
@@ -255,8 +255,8 @@ export class CatalogController {
     const variantGroup = String(params.variantGroup || '').trim();
     if (variantGroup) {
       const [groupProducts, groupStaged] = await Promise.all([
-        this.productRepo.find({ where: { variant_group: variantGroup as any }, take: 80 }),
-        this.stagedRepo.find({ where: { variant_group: variantGroup as any }, take: 80 }),
+        this.productRepo.find({ where: { variant_group: variantGroup as any }, take: 40 }),
+        this.stagedRepo.find({ where: { variant_group: variantGroup as any }, take: 40 }),
       ]);
       const ids = new Set(groupProducts.map((product) => product.id));
       for (const id of await this.productIdsFromStaged(groupStaged)) ids.add(id);
@@ -266,21 +266,12 @@ export class CatalogController {
     const title = String(params.title || '').trim();
     if (title) {
       const [titleProducts, titleStaged] = await Promise.all([
-        this.productRepo.find({ where: { title }, take: 80 }),
-        this.stagedRepo.find({ where: { title }, take: 80 }),
+        this.productRepo.find({ where: { title }, take: 40 }),
+        this.stagedRepo.find({ where: { title }, take: 40 }),
       ]);
       const ids = new Set(titleProducts.map((product) => product.id));
       for (const id of await this.productIdsFromStaged(titleStaged)) ids.add(id);
       addPubs(await this.publicRowsForProductIds(Array.from(ids)));
-    }
-
-    const category = String(params.category || '').trim();
-    if (category && byId.size <= 1) {
-      addPubs(await this.publicRepo.find({
-        where: { is_published: true as any, category },
-        order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
-        take: 120,
-      }));
     }
 
     return Array.from(byId.values());
@@ -441,7 +432,6 @@ export class CatalogController {
     const variantPubs = await this.findVariantPubs({
       variantGroup,
       title: product?.title || staged?.title || '',
-      category: pub.category || staged?.category || null,
     });
     const variantRows = await this.hydratePublicRows(variantPubs);
 
