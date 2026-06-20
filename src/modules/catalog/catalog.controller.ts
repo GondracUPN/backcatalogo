@@ -199,7 +199,6 @@ export class CatalogController {
       image: img,
       images: Array.isArray(pub.images) ? pub.images : [],
       title: product?.title || staged?.title || pub.slug,
-      created_at: pub.created_at,
       condition,
       saleType,
       discount,
@@ -217,6 +216,94 @@ export class CatalogController {
       batteryHealth,
       includes: includesDisplay || null,
     };
+  }
+
+  private async publicRowsForProductIds(productIds: string[]) {
+    const ids = Array.from(new Set(productIds.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!ids.length) return [] as CatalogPublic[];
+    return this.publicRepo.find({
+      where: { product_id: In(ids), is_published: true as any },
+      order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
+      take: 120,
+    });
+  }
+
+  private async productIdsFromStaged(stagedRows: StagedProduct[]) {
+    const ids = new Set<string>();
+    for (const row of stagedRows) {
+      if (row.source_id) ids.add(row.source_id);
+    }
+
+    const skus = Array.from(new Set(stagedRows.map((row) => String(row.sku || '').trim()).filter(Boolean)));
+    if (skus.length) {
+      const products = await this.productRepo.find({
+        where: { sku: In(skus) },
+        take: skus.length,
+      });
+      for (const product of products) ids.add(product.id);
+    }
+
+    return ids;
+  }
+
+  private async findVariantPubs(params: { variantGroup?: string; title?: string; category?: string | null }) {
+    const byId = new Map<string, CatalogPublic>();
+    const addPubs = (pubs: CatalogPublic[]) => {
+      for (const row of pubs) byId.set(row.id, row);
+    };
+
+    const variantGroup = String(params.variantGroup || '').trim();
+    if (variantGroup) {
+      const [groupProducts, groupStaged] = await Promise.all([
+        this.productRepo.find({ where: { variant_group: variantGroup as any }, take: 80 }),
+        this.stagedRepo.find({ where: { variant_group: variantGroup as any }, take: 80 }),
+      ]);
+      const ids = new Set(groupProducts.map((product) => product.id));
+      for (const id of await this.productIdsFromStaged(groupStaged)) ids.add(id);
+      addPubs(await this.publicRowsForProductIds(Array.from(ids)));
+    }
+
+    const title = String(params.title || '').trim();
+    if (title) {
+      const [titleProducts, titleStaged] = await Promise.all([
+        this.productRepo.find({ where: { title }, take: 80 }),
+        this.stagedRepo.find({ where: { title }, take: 80 }),
+      ]);
+      const ids = new Set(titleProducts.map((product) => product.id));
+      for (const id of await this.productIdsFromStaged(titleStaged)) ids.add(id);
+      addPubs(await this.publicRowsForProductIds(Array.from(ids)));
+    }
+
+    const category = String(params.category || '').trim();
+    if (category && byId.size <= 1) {
+      addPubs(await this.publicRepo.find({
+        where: { is_published: true as any, category },
+        order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
+        take: 120,
+      }));
+    }
+
+    return Array.from(byId.values());
+  }
+
+  private async hydratePublicRows(pubs: CatalogPublic[]) {
+    const productIds = pubs.map((pub) => pub.product_id);
+    const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
+    const productById = new Map(products.map((product) => [product.id, product] as const));
+
+    const skus = Array.from(new Set(products.map((product) => String(product.sku || '').trim()).filter(Boolean)));
+    const [stagedBySku, stagedByPid] = await Promise.all([
+      skus.length ? this.stagedRepo.findBy({ sku: In(skus) }) : Promise.resolve([] as StagedProduct[]),
+      productIds.length ? this.stagedRepo.findBy({ source_id: In(productIds) }) : Promise.resolve([] as StagedProduct[]),
+    ]);
+    const stagedBySkuMap = new Map(stagedBySku.map((row) => [row.sku, row] as const));
+    const stagedByPidMap = new Map(stagedByPid.map((row) => [row.source_id, row] as const));
+
+    return pubs.map((pub) => {
+      const product = productById.get(pub.product_id);
+      const staged = product?.sku ? (stagedBySkuMap.get(product.sku) || stagedByPidMap.get(pub.product_id)) : stagedByPidMap.get(pub.product_id);
+      return { pub, product, staged };
+    });
   }
 
   private async ensureCatalogViewsTable() {
@@ -242,10 +329,7 @@ export class CatalogController {
   async list(@Query('q') q?: string, @Query('category') category?: string) {
     const where: any = { is_published: true };
     if (category) where.category = category;
-    // Cuando se filtra por categoría, mostrar más antiguos primero.
-    const order = category
-      ? ({ sort_order: 'ASC' as any, created_at: 'ASC' as any })
-      : ({ sort_order: 'ASC' as any, created_at: 'DESC' as any });
+    const order = { sort_order: 'ASC' as any, created_at: 'DESC' as any };
     const pubs = await this.publicRepo.find({ where, order });
     const productIds = pubs.map((p) => p.product_id);
     const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
@@ -262,7 +346,15 @@ export class CatalogController {
       .map((p) => {
         const product = pMap.get(p.product_id);
         const staged = product ? (sBySku.get(product.sku) || sByPid.get(p.product_id)) : sByPid.get(p.product_id);
-        return { ...p, product, staged };
+        return {
+          id: p.id,
+          product_id: p.product_id,
+          slug: p.slug,
+          category: p.category,
+          images: Array.isArray(p.images) ? p.images : [],
+          product: this.publicProduct(product || null),
+          staged: this.publicStaged(staged || null),
+        };
       })
       // Ocultar productos vendidos del catálogo público.
       .filter((row) => row.product?.status !== 'sold')
@@ -305,13 +397,9 @@ export class CatalogController {
     }
 
     const bestRows = [...rows].sort((a, b) => {
-      const aMeta = this.priceMeta(a.product, a.staged);
-      const bMeta = this.priceMeta(b.product, b.staged);
-      const aPromo = aMeta.saleType === 'PROMOCION' || (Number(aMeta.compareAt || 0) > Number(aMeta.price || 0) && Number(aMeta.price || 0) > 0) ? 1 : 0;
-      const bPromo = bMeta.saleType === 'PROMOCION' || (Number(bMeta.compareAt || 0) > Number(bMeta.price || 0) && Number(bMeta.price || 0) > 0) ? 1 : 0;
       const aTime = new Date(a.pub.created_at || 0).getTime() || 0;
       const bTime = new Date(b.pub.created_at || 0).getTime() || 0;
-      return bPromo - aPromo || bTime - aTime;
+      return bTime - aTime;
     });
 
     const items = bestRows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
@@ -337,28 +425,28 @@ export class CatalogController {
       }
     }
     if (!pub) throw new NotFoundException('not found');
-    const product = await this.productRepo.findOne({ where: { id: pub.product_id } });
-    let staged: StagedProduct | null = null;
-    if (product?.sku) staged = await this.stagedRepo.findOne({ where: { sku: product.sku } });
-    if (!staged) staged = await this.stagedRepo.findOne({ where: { source_id: pub.product_id } });
+    const [product, stagedBySource] = await Promise.all([
+      this.productRepo.findOne({ where: { id: pub.product_id } }),
+      this.stagedRepo.findOne({ where: { source_id: pub.product_id } }),
+    ]);
+    let staged: StagedProduct | null = stagedBySource;
+    if (!staged && product?.sku) staged = await this.stagedRepo.findOne({ where: { sku: product.sku } });
     const notes = this.parseNotes(staged);
     const variantGroup = String(product?.variant_group || staged?.variant_group || notes?.variantGroup || notes?.variant_group || '').trim();
     let variants: any[] = [];
-    const allPublishedPubs = await this.publicRepo.findBy({ is_published: true as any });
-    const allProductIds = allPublishedPubs.map((p) => p.product_id);
-    const allProducts = allProductIds.length ? await this.productRepo.findBy({ id: In(allProductIds) }) : [];
-    const productById = new Map(allProducts.map((p) => [p.id, p] as const));
-    const allSkus = allProducts.map((p) => p.sku).filter(Boolean);
-    const allStagedBySku = allSkus.length ? await this.stagedRepo.findBy({ sku: In(allSkus) }) : [];
-    const stagedBySkuMap = new Map(allStagedBySku.map((s) => [s.sku, s] as const));
     const activeTitleKey = normalizeVariantKey(product?.title || staged?.title || '');
     const activeCategoryKey = normalizeVariantKey(pub.category || staged?.category || '');
     const activeGroupKey = normalizeVariantKey(variantGroup);
 
-    variants = allPublishedPubs
-      .map((variantPub) => {
-        const variantProduct = productById.get(variantPub.product_id);
-        const variantStaged = variantProduct?.sku ? stagedBySkuMap.get(variantProduct.sku) : undefined;
+    const variantPubs = await this.findVariantPubs({
+      variantGroup,
+      title: product?.title || staged?.title || '',
+      category: pub.category || staged?.category || null,
+    });
+    const variantRows = await this.hydratePublicRows(variantPubs);
+
+    variants = variantRows
+      .map(({ pub: variantPub, product: variantProduct, staged: variantStaged }) => {
         const variantNotes = this.parseNotes(variantStaged);
         const rowGroup = String(
           variantProduct?.variant_group ||

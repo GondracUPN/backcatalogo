@@ -94,9 +94,42 @@ function saleDateValue(value: unknown, fallback = new Date()) {
   const raw = String(value || '').trim();
   if (!raw) return fallback;
   const parsed = /^\d{4}-\d{2}-\d{2}$/.test(raw)
-    ? new Date(`${raw}T12:00:00`)
+    ? new Date(`${raw}T12:00:00-05:00`)
     : new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function analyticsCategoryRank(value: unknown) {
+  const key = String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}+/gu, '');
+  const order: Record<string, number> = {
+    macbook: 0,
+    ipad: 1,
+    ipads: 1,
+    iphone: 2,
+    iphones: 2,
+    watch: 3,
+    otros: 4,
+    proximo: 5,
+    proximos: 5,
+    preventa: 5,
+  };
+  return order[key] ?? 99;
+}
+
+function analyticsDateIso(value: unknown) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function analyticsLastViewedDesc(a: { lastViewedAt?: unknown }, b: { lastViewedAt?: unknown }) {
+  const aTime = Date.parse(String(a.lastViewedAt || ''));
+  const bTime = Date.parse(String(b.lastViewedAt || ''));
+  return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
 }
 
 @Controller('admin')
@@ -608,13 +641,16 @@ export class AdminController {
   @Get('catalog')
   async listAdminCatalog(@Headers('authorization') authHeader: string) {
     this.requireAdmin(authHeader);
-    const products = await this.productRepo.find({
-      order: { updated_at: 'DESC' as any },
+    const publishedRows = await this.publicRepo.find({
+      where: { is_published: true as any },
+      order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
       take: 500,
     });
-    const productIds = products.map((p) => p.id);
+    const publishedRank = new Map(publishedRows.map((pub, index) => [pub.product_id, index] as const));
+    const productIds = publishedRows.map((pub) => pub.product_id);
+    const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
     const skus = products.map((p) => p.sku).filter(Boolean);
-    const pubs = productIds.length ? await this.publicRepo.findBy({ product_id: In(productIds) }) : [];
+    const pubs = publishedRows;
     const stagedRows = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
     const linkedRowsSource = skus.length
       ? await this.stagedRepo.find({
@@ -677,12 +713,15 @@ export class AdminController {
           slug: pub?.slug || null,
           is_published: Boolean(pub?.is_published),
           category: pub?.category || staged?.category || null,
+          created_at: pub?.created_at || product.created_at,
+          updated_at: pub?.updated_at || product.updated_at,
           images: pub?.images || staged?.images || [],
           product,
           staged,
           linkedStaged: [...linkedExplicit, ...linkedFallback],
         };
-      });
+      })
+      .sort((a, b) => (publishedRank.get(a.product_id) ?? 999999) - (publishedRank.get(b.product_id) ?? 999999));
 
     return { items };
   }
@@ -975,16 +1014,27 @@ export class AdminController {
     if (existingReplacementPublic && existingReplacementPublic.id !== currentPublic.id) {
       await this.publicRepo.delete({ id: existingReplacementPublic.id });
     }
-    await this.publicRepo.update(
-      { id: currentPublic.id },
-      {
-        product_id: replacementProduct.id,
+    await this.publicRepo.manager.query(
+      `
+      UPDATE catalog_public
+      SET product_id = $1,
+          slug = $2,
+          is_published = true,
+          category = $3,
+          tags = $4,
+          images = $5::jsonb,
+          created_at = now(),
+          updated_at = now()
+      WHERE id = $6
+      `,
+      [
+        replacementProduct.id,
         slug,
-        is_published: true,
-        category: stagedForValidation.category || currentPublic.category || null,
-        tags: replacement.tags || currentStaged?.tags || null,
-        images: mergedImages,
-      },
+        stagedForValidation.category || currentPublic.category || null,
+        replacement.tags || currentStaged?.tags || null,
+        JSON.stringify(mergedImages || []),
+        currentPublic.id,
+      ],
     );
 
     await this.stagedRepo.update(
@@ -1515,6 +1565,7 @@ export class AdminController {
       category: string;
       totalViews: number;
       uniqueVisitors: Set<string>;
+      lastViewedAt: string;
       products: Map<string, {
         productId: string;
         slug: string;
@@ -1531,13 +1582,14 @@ export class AdminController {
       const productId = String(row.product_id || '');
       const slug = String(row.product_slug || '');
       const title = String(row.product_title || slug || 'Producto');
-      const createdAt = String(row.created_at || '');
+      const createdAt = analyticsDateIso(row.created_at);
 
       if (!byCategory.has(category)) {
         byCategory.set(category, {
           category,
           totalViews: 0,
           uniqueVisitors: new Set<string>(),
+          lastViewedAt: createdAt,
           products: new Map(),
         });
       }
@@ -1545,6 +1597,9 @@ export class AdminController {
       const categoryRow = byCategory.get(category)!;
       categoryRow.totalViews += 1;
       if (sessionId) categoryRow.uniqueVisitors.add(sessionId);
+      if (createdAt && (!categoryRow.lastViewedAt || createdAt > categoryRow.lastViewedAt)) {
+        categoryRow.lastViewedAt = createdAt;
+      }
 
       if (!categoryRow.products.has(productId)) {
         categoryRow.products.set(productId, {
@@ -1571,6 +1626,7 @@ export class AdminController {
         totalViews: categoryRow.totalViews,
         uniqueVisitors: categoryRow.uniqueVisitors.size,
         productsCount: categoryRow.products.size,
+        lastViewedAt: categoryRow.lastViewedAt,
         products: Array.from(categoryRow.products.values())
           .map((productRow) => ({
             productId: productRow.productId,
@@ -1580,9 +1636,9 @@ export class AdminController {
             uniqueVisitors: productRow.uniqueVisitors.size,
             lastViewedAt: productRow.lastViewedAt,
           }))
-          .sort((a, b) => b.totalViews - a.totalViews || b.uniqueVisitors - a.uniqueVisitors || a.title.localeCompare(b.title)),
+          .sort((a, b) => analyticsLastViewedDesc(a, b) || b.totalViews - a.totalViews || a.title.localeCompare(b.title)),
       }))
-      .sort((a, b) => b.totalViews - a.totalViews || b.uniqueVisitors - a.uniqueVisitors || a.category.localeCompare(b.category));
+      .sort((a, b) => analyticsLastViewedDesc(a, b) || analyticsCategoryRank(a.category) - analyticsCategoryRank(b.category) || a.category.localeCompare(b.category));
 
     return {
       days: safeDays,

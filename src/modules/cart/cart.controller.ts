@@ -256,10 +256,11 @@ export class CartController {
 
     if (!customerName) throw new BadRequestException('name required');
     if (!phoneDigits) throw new BadRequestException('phone required');
-    if (locationScope !== 'lima' && locationScope !== 'provincia') {
+    if (locationScope !== 'almacen' && locationScope !== 'punto_medio') {
       throw new BadRequestException('invalid locationScope');
     }
-    if (!locationValue) throw new BadRequestException('location required');
+    if (locationScope === 'punto_medio' && !locationValue) throw new BadRequestException('location required');
+    const resolvedLocationValue = locationScope === 'almacen' ? 'Recoger en almacen' : locationValue;
 
     const rows = await this.cartItems.find({ where: { cart_id: cartId }, order: { created_at: 'ASC' as any } });
     if (!rows.length) throw new BadRequestException('cart empty');
@@ -325,10 +326,13 @@ export class CartController {
         customerName,
         phoneDigits,
         locationScope,
-        locationValue,
+        resolvedLocationValue,
         JSON.stringify(metadata),
       ],
     );
+
+    await this.cartItems.delete({ cart_id: cartId });
+    await this.refreshSessionCart(req, cartId);
 
     return { ok: true, id: inserted?.[0]?.id || null };
   }
