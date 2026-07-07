@@ -83,6 +83,15 @@ export class SyncController {
     const includesExtra = p?.includesExtra ?? p?.includes_extra ?? null;
     const keyboardLayout = p?.keyboardLayout ?? p?.keyboard_layout ?? null;
     const productCondition = p?.productCondition ?? p?.product_condition ?? null;
+    const color = p?.color ?? null;
+    const batteryCyclesValue = p?.batteryCycles ?? p?.battery_cycles ?? null;
+    const batteryHealthValue = p?.batteryHealth ?? p?.battery_health ?? null;
+    const batteryCycles = batteryCyclesValue === null || batteryCyclesValue === ''
+      ? null
+      : Number(batteryCyclesValue);
+    const batteryHealth = batteryHealthValue === null || batteryHealthValue === ''
+      ? null
+      : Number(batteryHealthValue);
 
     // Normalizar specs (solo campos necesarios)
     const normSpecs = (() => {
@@ -94,6 +103,16 @@ export class SyncController {
         estado: s?.estado ?? null,
         sim,
         conCaja: s?.conCaja ?? null,
+        color,
+        bateria: {
+          ciclos: Number.isFinite(batteryCycles) ? batteryCycles : null,
+          salud: Number.isFinite(batteryHealth) ? batteryHealth : null,
+        },
+        batteryCycles: Number.isFinite(batteryCycles) ? batteryCycles : null,
+        batteryHealth: Number.isFinite(batteryHealth) ? batteryHealth : null,
+        precioLista: p?.price ?? null,
+        minOfferPrice,
+        saleType,
         detalle: {
           id: d?.id ?? null,
           esim: sim,
@@ -128,6 +147,9 @@ export class SyncController {
         includes,
         includes_extra: includesExtra,
         keyboard_layout: keyboardLayout,
+        battery_cycles: Number.isFinite(batteryCycles) ? batteryCycles : null,
+        battery_health: Number.isFinite(batteryHealth) ? batteryHealth : null,
+        color,
         product_condition: productCondition ?? normSpecs?.estado ?? null,
       },
       { conflictPaths: ['sku'] },
@@ -155,6 +177,9 @@ export class SyncController {
         includes,
         includes_extra: includesExtra,
         keyboard_layout: keyboardLayout,
+        battery_cycles: Number.isFinite(batteryCycles) ? batteryCycles : null,
+        battery_health: Number.isFinite(batteryHealth) ? batteryHealth : null,
+        color,
         product_condition: productCondition ?? normSpecs?.estado ?? null,
       },
       { conflictPaths: ['source_id'] },

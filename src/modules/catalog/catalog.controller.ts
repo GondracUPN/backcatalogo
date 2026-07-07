@@ -56,6 +56,7 @@ export class CatalogController {
       'garantiaActiva', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
       'watchConnection', 'watchAccessories', 'watchIncludes', 'productCondition',
       'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
+      'cuboFake', 'cableFake',
       'productDetails', 'detalles', 'detailImages', 'detailPhotos',
     ];
     const result = Object.fromEntries(

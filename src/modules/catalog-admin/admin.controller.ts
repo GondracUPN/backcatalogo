@@ -80,6 +80,24 @@ function stringifyNotes(value: any) {
   }
 }
 
+function normalizeMsSku(value: unknown) {
+  const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!raw) return '';
+  if (/^MS-\d+$/.test(raw)) return raw;
+  const number = raw.match(/\d+/)?.[0] || '';
+  return number ? `MS-${number}` : raw;
+}
+
+function randomSkuToken() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
+}
+
+function manualSkuForSaleType(value: unknown, saleType: string) {
+  const normalized = normalizeMsSku(value);
+  if (normalized) return saleType === 'PREVENTA' ? `PREV-${normalized}` : normalized;
+  return saleType === 'PREVENTA' ? `PREV-MS-${randomSkuToken()}` : `MS-${randomSkuToken()}`;
+}
+
 function promotionDiscountMode(notes: any, fallback?: unknown) {
   const raw = String(fallback ?? notes?.discountMode ?? notes?.discountType ?? 'percent').toLowerCase();
   return raw === 'amount' || raw === 'flat' || raw === 'soles' ? 'amount' : 'percent';
@@ -318,15 +336,15 @@ export class AdminController {
     const saleType = SALE_TYPES.has(rawSaleType) ? rawSaleType : 'PREVENTA';
     const title = String(body?.title || 'Preventa').trim() || 'Preventa';
 
-    let skuBase = String(body?.sku || '').trim().toUpperCase();
-    if (!skuBase) skuBase = 'PREV';
-    let sku = `${skuBase}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
+    const requestedSku = manualSkuForSaleType(body?.sku, saleType);
+    let sku = requestedSku;
     for (let tries = 0; tries < 10; tries += 1) {
       const existingProduct = await this.productRepo.findOne({ where: { sku } });
       const existingStaged = await this.stagedRepo.findOne({ where: { sku } });
       if (!existingProduct && !existingStaged) break;
-      sku = `${skuBase}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
-      if (tries === 9) throw new BadRequestException('sku unavailable');
+      if (body?.sku) throw new BadRequestException('SKU ya existe');
+      sku = manualSkuForSaleType('', saleType);
+      if (tries === 9) throw new BadRequestException('SKU no disponible');
     }
 
     const created = this.stagedRepo.create({
