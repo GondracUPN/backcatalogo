@@ -17,6 +17,7 @@ const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cable', 'Caja sola', 'Cable solo
 const KEYBOARD_LAYOUTS = new Set(['Ingles', 'Espanol', 'Otro']);
 const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
 const CATEGORIES = new Set(['macbook', 'ipad', 'iphone', 'watch', 'accesorios', 'otros']);
+const PRODUCT_VERSION_CONFIG_KEY = 'product_versions';
 
 function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
   const map: Record<string, string[]> = {
@@ -742,6 +743,46 @@ export class AdminController {
       .sort((a, b) => (publishedRank.get(a.product_id) ?? 999999) - (publishedRank.get(b.product_id) ?? 999999));
 
     return { items };
+  }
+
+  private async ensureCatalogSettingsTable() {
+    await this.productRepo.manager.query(`
+      CREATE TABLE IF NOT EXISTS catalog_settings (
+        key text PRIMARY KEY,
+        value jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+  }
+
+  @Get('product-versions')
+  async getProductVersions(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    await this.ensureCatalogSettingsTable();
+    const rows = await this.productRepo.manager.query(
+      `SELECT value FROM catalog_settings WHERE key = $1 LIMIT 1`,
+      [PRODUCT_VERSION_CONFIG_KEY],
+    );
+    return { ok: true, config: rows?.[0]?.value || {} };
+  }
+
+  @Post('product-versions')
+  async saveProductVersions(@Headers('authorization') authHeader: string, @Body() body: any) {
+    this.requireAdmin(authHeader);
+    const config = body?.config && typeof body.config === 'object' ? body.config : {};
+    await this.ensureCatalogSettingsTable();
+    const rows = await this.productRepo.manager.query(
+      `
+        INSERT INTO catalog_settings (key, value, created_at, updated_at)
+        VALUES ($1, $2::jsonb, now(), now())
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+        RETURNING value
+      `,
+      [PRODUCT_VERSION_CONFIG_KEY, JSON.stringify(config)],
+    );
+    return { ok: true, config: rows?.[0]?.value || config };
   }
 
   @Post('staged/bulk')
