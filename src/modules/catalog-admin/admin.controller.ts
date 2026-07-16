@@ -561,15 +561,28 @@ export class AdminController {
     // Los equipos nuevos identicos reponen una ficha existente; cada SKU queda
     // vinculado como unidad de stock, sin crear otra tarjeta en el catalogo.
     if (String(staged.product_condition || '') === 'Nuevo') {
-      const sameTitleProducts = await this.productRepo.find({ where: { title: publishTitle }, take: 100 });
+      const currentProduct = await this.productRepo.findOne({ where: { sku: staged.sku } });
+      const currentPublic = currentProduct
+        ? await this.publicRepo.findOne({ where: { product_id: currentProduct.id } })
+        : null;
+      const sameTitleProducts = currentPublic
+        ? []
+        : await this.productRepo.find({ where: { title: publishTitle }, take: 100 });
       const normalizedColor = String(staged.color || notes?.color || '').trim().toLowerCase();
-      const existingVariant = sameTitleProducts.find((candidate) =>
-        candidate.sku !== staged.sku &&
-        String(candidate.product_condition || '') === 'Nuevo' &&
-        String(candidate.color || '').trim().toLowerCase() === normalizedColor &&
-        Number(candidate.storage_gb || 0) === Number(staged.storage_gb || 0) &&
-        String(candidate.iphone_model || '') === String(staged.iphone_model || '')
-      );
+      let existingVariant: CatalogProduct | undefined;
+      for (const candidate of sameTitleProducts) {
+        if (
+          candidate.sku === staged.sku ||
+          String(candidate.product_condition || '') !== 'Nuevo' ||
+          String(candidate.color || '').trim().toLowerCase() !== normalizedColor ||
+          Number(candidate.storage_gb || 0) !== Number(staged.storage_gb || 0) ||
+          String(candidate.iphone_model || '') !== String(staged.iphone_model || '')
+        ) continue;
+        const candidateStaged = await this.stagedRepo.findOne({ where: { sku: candidate.sku } });
+        if (parseNotes(candidateStaged?.notes)?.linkedMainSku) continue;
+        existingVariant = candidate;
+        break;
+      }
       if (existingVariant) {
         const existingPublic = await this.publicRepo.findOne({ where: { product_id: existingVariant.id } });
         if (existingPublic) {
