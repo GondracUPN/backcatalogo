@@ -552,8 +552,62 @@ export class AdminController {
     if (publishTitle !== staged.title) {
       await this.stagedRepo.update({ id }, { title: publishTitle });
     }
+    const effectiveVariantGroup = String(staged.variant_group || publishTitle).trim() || publishTitle;
+    if (!staged.variant_group && effectiveVariantGroup) {
+      await this.stagedRepo.update({ id }, { variant_group: effectiveVariantGroup });
+    }
     const requestedSlug = String(body?.slug || '').trim();
     const baseSlug = slugify(requestedSlug || publishTitle);
+    // Los equipos nuevos identicos reponen una ficha existente; cada SKU queda
+    // vinculado como unidad de stock, sin crear otra tarjeta en el catalogo.
+    if (String(staged.product_condition || '') === 'Nuevo') {
+      const sameTitleProducts = await this.productRepo.find({ where: { title: publishTitle }, take: 100 });
+      const normalizedColor = String(staged.color || notes?.color || '').trim().toLowerCase();
+      const existingVariant = sameTitleProducts.find((candidate) =>
+        candidate.sku !== staged.sku &&
+        String(candidate.product_condition || '') === 'Nuevo' &&
+        String(candidate.color || '').trim().toLowerCase() === normalizedColor &&
+        Number(candidate.storage_gb || 0) === Number(staged.storage_gb || 0) &&
+        String(candidate.iphone_model || '') === String(staged.iphone_model || '')
+      );
+      if (existingVariant) {
+        const existingPublic = await this.publicRepo.findOne({ where: { product_id: existingVariant.id } });
+        if (existingPublic) {
+          const mainStaged = await this.stagedRepo.findOne({ where: { sku: existingVariant.sku } });
+          const mainNotes = parseNotes(mainStaged?.notes);
+          const linkedSkus = Array.from(new Set([
+            ...(Array.isArray(mainNotes?.linkedSkus) ? mainNotes.linkedSkus : []),
+            staged.sku,
+          ].map((value) => String(value || '').trim()).filter(Boolean)));
+          if (mainStaged) {
+            await this.stagedRepo.update({ id: mainStaged.id }, {
+              notes: stringifyNotes({ ...mainNotes, linkedSkus, linkedSkuGroup: { mainSku: existingVariant.sku, skus: linkedSkus } }),
+              status: 'published' as any,
+              variant_group: effectiveVariantGroup,
+            });
+          }
+          await this.stagedRepo.update({ id }, {
+            title: publishTitle,
+            status: 'published' as any,
+            variant_group: effectiveVariantGroup,
+            notes: stringifyNotes({
+              ...notes,
+              linkedMainSku: existingVariant.sku,
+              linkedMainTitle: publishTitle,
+              linkedSkuGroup: { mainSku: existingVariant.sku },
+            }),
+          });
+          await this.productRepo.update({ id: existingVariant.id }, {
+            status: 'listed' as any,
+            stock: Math.max(0, Number(existingVariant.stock || 0)) + Math.max(1, Number(staged.stock || 1)),
+            price: String(salePrice || existingVariant.price || 0),
+            variant_group: effectiveVariantGroup,
+          });
+          await this.publicRepo.update({ id: existingPublic.id }, { is_published: true as any });
+          return { ok: true, result: { id: existingPublic.id }, replenished: true, warnings: validation.warnings };
+        }
+      }
+    }
     // 1) Asegurar que el producto principal tenga el precio final elegido
     await this.productRepo.upsert(
       {
@@ -574,7 +628,7 @@ export class AdminController {
         includes: asIncludesKind(staged.includes || null),
         includes_extra: staged.includes_extra || null,
         keyboard_layout: asKeyboardLayout(staged.keyboard_layout || null),
-        variant_group: staged.variant_group || null,
+        variant_group: effectiveVariantGroup || null,
         status: 'listed' as any,
         stock: Number(staged.stock ?? 1),
       },
@@ -604,7 +658,7 @@ export class AdminController {
       { conflictPaths: ['product_id'] },
     );
     // Marcar staged como publicado para ocultarlo del inventario
-    await this.stagedRepo.update({ id }, { status: 'published' as any, title: publishTitle });
+    await this.stagedRepo.update({ id }, { status: 'published' as any, title: publishTitle, variant_group: effectiveVariantGroup || null });
     const mergeIds = Array.isArray(body?.mergeStagedIds)
       ? body.mergeStagedIds.map((value: unknown) => String(value || '').trim()).filter(Boolean).filter((value: string) => value !== id)
       : [];
