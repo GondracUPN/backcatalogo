@@ -74,6 +74,8 @@ export class SyncController {
 
     const evt: IncomingEvent = body?.event;
     const p = body?.product || {};
+    const sku = String(p?.sku || '').trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS');
+    if (!sku) throw new UnauthorizedException('missing sku');
     const saleType = p?.saleType ?? p?.sale_type ?? null;
     const discount = p?.discount ?? null;
     const finalPrice = p?.finalPrice ?? p?.final_price ?? null;
@@ -83,6 +85,8 @@ export class SyncController {
     const includesExtra = p?.includesExtra ?? p?.includes_extra ?? null;
     const keyboardLayout = p?.keyboardLayout ?? p?.keyboard_layout ?? null;
     const productCondition = p?.productCondition ?? p?.product_condition ?? null;
+    const warrantyEnabled = p?.warrantyEnabled ?? p?.garantiaActiva ?? p?.specs?.warrantyEnabled ?? p?.specs?.garantiaActiva ?? null;
+    const warrantyDate = p?.warrantyDate ?? p?.garantiaFecha ?? p?.garantia ?? p?.specs?.warrantyDate ?? p?.specs?.garantiaFecha ?? p?.specs?.garantia ?? null;
     const color = p?.color ?? null;
     const batteryCyclesValue = p?.batteryCycles ?? p?.battery_cycles ?? null;
     const batteryHealthValue = p?.batteryHealth ?? p?.battery_health ?? null;
@@ -113,6 +117,14 @@ export class SyncController {
         precioLista: p?.price ?? null,
         minOfferPrice,
         saleType,
+        includes,
+        includesExtra,
+        productCondition: productCondition ?? s?.estado ?? null,
+        warrantyEnabled,
+        warrantyDate,
+        garantiaActiva: warrantyEnabled,
+        garantiaFecha: warrantyDate,
+        garantia: warrantyDate,
         detalle: {
           id: d?.id ?? null,
           esim: sim,
@@ -134,7 +146,7 @@ export class SyncController {
     // Upsert main products por SKU (UUID lo genera la DB)
     await this.products.upsert(
       {
-        sku: p.sku,
+        sku,
         title: p.title,
         price: String(p.price ?? '0'),
         status: p.status,
@@ -156,11 +168,11 @@ export class SyncController {
     );
 
     // Upsert staged mirror by source_id (uuid derivado del id de origen)
-    const sid = this.toDeterministicUuid(String(p.id ?? p.sku ?? 'unknown'));
+    const sid = this.toDeterministicUuid(String(p.id ?? sku));
     await this.staged.upsert(
       {
         source_id: sid,
-        sku: p.sku,
+        sku,
         title: p.title,
         price: String(p.price ?? '0'),
         status: p.status,

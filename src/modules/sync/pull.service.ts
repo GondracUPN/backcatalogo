@@ -244,6 +244,32 @@ export class PullSyncService {
       }
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+    const product = item?.product || item?.producto || item || {};
+    const staged = item?.staged || item?.staged_product || item?.stage || {};
+    const specs = this.pickValue(staged?.specs, item?.specs, product?.specs, (parsed as any)?.specs, {}) as any;
+    const battery = this.pickValue(staged?.bateria, item?.bateria, product?.bateria, specs?.bateria, (parsed as any)?.bateria, {}) as any;
+    const batteryCycles = this.pickValue(staged?.battery_cycles, staged?.batteryCycles, item?.battery_cycles, item?.batteryCycles, product?.battery_cycles, product?.batteryCycles, battery?.ciclos, (parsed as any)?.batteryCycles);
+    const batteryHealth = this.pickValue(staged?.battery_health, staged?.batteryHealth, item?.battery_health, item?.batteryHealth, product?.battery_health, product?.batteryHealth, battery?.salud, (parsed as any)?.batteryHealth);
+    const color = this.pickValue(staged?.color, item?.color, product?.color, specs?.color, (parsed as any)?.color);
+    const condition = this.pickValue(staged?.product_condition, staged?.productCondition, item?.product_condition, item?.productCondition, product?.product_condition, product?.productCondition, specs?.estado, (parsed as any)?.productCondition, (parsed as any)?.estado);
+    const includes = this.pickValue(staged?.includes, item?.includes, product?.includes, specs?.includes, specs?.incluye, (parsed as any)?.includes);
+    const includesExtra = this.pickValue(staged?.includes_extra, staged?.includesExtra, item?.includes_extra, item?.includesExtra, product?.includes_extra, product?.includesExtra, (parsed as any)?.includesExtra);
+    const warrantyEnabled = this.pickValue(staged?.warrantyEnabled, staged?.garantiaActiva, item?.warrantyEnabled, item?.garantiaActiva, product?.warrantyEnabled, product?.garantiaActiva, specs?.warrantyEnabled, specs?.garantiaActiva, (parsed as any)?.warrantyEnabled, (parsed as any)?.garantiaActiva);
+    const warrantyDate = this.pickValue(staged?.warrantyDate, staged?.garantiaFecha, staged?.garantia, item?.warrantyDate, item?.garantiaFecha, item?.garantia, product?.warrantyDate, product?.garantiaFecha, product?.garantia, specs?.garantiaFecha, specs?.garantia, (parsed as any)?.warrantyDate, (parsed as any)?.garantiaFecha, (parsed as any)?.garantia);
+    parsed = {
+      ...parsed,
+      ...(color !== undefined ? { color } : {}),
+      ...(condition !== undefined ? { productCondition: condition, estado: condition } : {}),
+      ...(includes !== undefined ? { includes } : {}),
+      ...(includesExtra !== undefined ? { includesExtra } : {}),
+      ...(batteryCycles !== undefined || batteryHealth !== undefined ? {
+        bateria: { ...((parsed as any).bateria || {}), ciclos: batteryCycles ?? (parsed as any)?.bateria?.ciclos ?? null, salud: batteryHealth ?? (parsed as any)?.bateria?.salud ?? null },
+        batteryCycles: batteryCycles ?? (parsed as any)?.batteryCycles ?? null,
+        batteryHealth: batteryHealth ?? (parsed as any)?.batteryHealth ?? null,
+      } : {}),
+      ...(warrantyEnabled !== undefined ? { warrantyEnabled, garantiaActiva: warrantyEnabled } : {}),
+      ...(warrantyDate !== undefined ? { warrantyDate, garantiaFecha: warrantyDate, garantia: warrantyDate } : {}),
+    };
     const meta = this.sourceMeta(item);
     if (!meta.storeName && !meta.storeUrl && !meta.sourceUrl) return this.normalizeNotes(parsed);
     return this.normalizeNotes({
@@ -392,7 +418,8 @@ export class PullSyncService {
   private itemKeys(item: any) {
     const product = item?.product || item?.producto || item;
     const staged = item?.staged || item?.staged_product || item?.stage || null;
-    const sku = this.pickValue(product?.sku, staged?.sku, item?.sku);
+    const rawSku = this.pickValue(product?.sku, staged?.sku, item?.sku);
+    const sku = rawSku ? String(rawSku).trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS') : rawSku;
     const sourceRaw = this.pickValue(staged?.source_id, item?.id, product?.id, sku);
     const sourceId = sourceRaw
       ? (/^[0-9a-f-]{36}$/i.test(String(sourceRaw)) ? String(sourceRaw) : this.toDeterministicUuid(String(sourceRaw)))
@@ -493,6 +520,9 @@ export class PullSyncService {
       product?.productCondition,
       null,
     ) as any;
+    const batteryCycles = this.pickValue(staged?.battery_cycles, staged?.batteryCycles, item?.battery_cycles, item?.batteryCycles, product?.battery_cycles, product?.batteryCycles, staged?.bateria?.ciclos, item?.bateria?.ciclos, product?.bateria?.ciclos, product?.specs?.bateria?.ciclos, null) as any;
+    const batteryHealth = this.pickValue(staged?.battery_health, staged?.batteryHealth, item?.battery_health, item?.batteryHealth, product?.battery_health, product?.batteryHealth, staged?.bateria?.salud, item?.bateria?.salud, product?.bateria?.salud, product?.specs?.bateria?.salud, null) as any;
+    const color = this.pickValue(staged?.color, item?.color, product?.color, product?.specs?.color, null) as any;
 
     const category = this.pickValue(staged?.category, item?.category, product?.category, null) as any;
     const tags = this.normalizeArray(this.pickValue(staged?.tags, item?.tags, null));
@@ -513,6 +543,9 @@ export class PullSyncService {
       final_price: finalPrice ?? null,
       min_offer_price: minOffer ?? null,
       iphone_model: iphoneModel ?? null,
+      battery_cycles: batteryCycles === null ? null : Number(batteryCycles),
+      battery_health: batteryHealth === null ? null : Number(batteryHealth),
+      color: color ?? null,
       includes: includes ?? null,
       includes_extra: includesExtra ?? null,
       keyboard_layout: keyboardLayout ?? null,
@@ -541,6 +574,9 @@ export class PullSyncService {
         final_price: row.final_price ?? null,
         min_offer_price: row.min_offer_price ?? null,
         iphone_model: asIphoneModel(row.iphone_model ?? null),
+        battery_cycles: Number.isFinite(row.battery_cycles) ? row.battery_cycles : null,
+        battery_health: Number.isFinite(row.battery_health) ? row.battery_health : null,
+        color: row.color,
         includes: asIncludesKind(row.includes ?? null),
         includes_extra: row.includes_extra ?? null,
         keyboard_layout: asKeyboardLayout(row.keyboard_layout ?? null),
@@ -562,6 +598,9 @@ export class PullSyncService {
         final_price: row.final_price,
         min_offer_price: row.min_offer_price,
         iphone_model: row.iphone_model,
+        battery_cycles: Number.isFinite(row.battery_cycles) ? row.battery_cycles : null,
+        battery_health: Number.isFinite(row.battery_health) ? row.battery_health : null,
+        color: row.color,
         includes: row.includes,
         includes_extra: row.includes_extra,
         keyboard_layout: row.keyboard_layout,

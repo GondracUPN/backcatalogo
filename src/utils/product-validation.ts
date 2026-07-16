@@ -129,7 +129,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
   const includesValue = staged.includes || notes?.includes || '';
   const includesExtra = staged.includes_extra || notes?.includesExtra || '';
   const isNew = String(productCondition || '') === 'Nuevo';
-  if (!isNew && includesValue === 'Otros' && !includesExtra) errors.push('includes_extra requerido');
+  if (!isPreventa && !isNew && includesValue === 'Otros' && !includesExtra) errors.push('includes_extra requerido');
 
   const images = Array.isArray(staged.images) ? staged.images : [];
   if (!images.length) errors.push('imagenes requeridas');
@@ -192,8 +192,8 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     }
     if (!isPreventa && productCondition !== 'Nuevo' && !batteryHealth && batteryHealth !== 0) errors.push('battery_health requerido');
     if (!color) errors.push('color requerido');
-    if (!isNew && !includesValue) errors.push('incluye requerido');
-    if (!isNew && includesValue && !IPHONE_INCLUDES_VALUES.has(String(includesValue))) {
+    if (!isPreventa && !isNew && !includesValue) errors.push('incluye requerido');
+    if (!isPreventa && !isNew && includesValue && !IPHONE_INCLUDES_VALUES.has(String(includesValue))) {
       errors.push('incluye invalido para iphone');
     }
     if (!Number.isFinite(Number(iphoneNumber)) || Number(iphoneNumber) <= 0) {

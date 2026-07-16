@@ -312,7 +312,22 @@ export class AdminController {
     }
 
     const where: any = {};
-    if (q) where.title = ILike(`%${q}%`);
+    if (q) {
+      const term = `%${String(q).trim()}%`;
+      const query = this.stagedRepo
+        .createQueryBuilder('staged')
+        .where('(staged.title ILIKE :term OR staged.sku ILIKE :term)', { term });
+      if (status) query.andWhere('staged.status = :status', { status });
+      else query.andWhere('staged.status NOT IN (:...hidden)', { hidden: ['published', 'hidden', 'sold'] });
+      query.orderBy('staged.updated_at', 'DESC');
+      const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
+      if (!allRows) {
+        const take = Math.min(100, Math.max(1, parseInt(String(pageSize))));
+        query.take(take).skip((Math.max(1, parseInt(String(page))) - 1) * take);
+      }
+      const [items, total] = await query.getManyAndCount();
+      return { items, total };
+    }
     if (status) where.status = status;
     else where.status = Not(In(['published', 'hidden', 'sold'] as any) as any);
     const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
@@ -447,8 +462,8 @@ export class AdminController {
         throw new BadRequestException('battery_health required');
       }
       if (!color) throw new BadRequestException('color required');
-      if (!includes) throw new BadRequestException('includes required');
-      if (!IPHONE_INCLUDES_VALUES.has(String(includes))) {
+      if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && !includes) throw new BadRequestException('includes required');
+      if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && includes && !IPHONE_INCLUDES_VALUES.has(String(includes))) {
         throw new BadRequestException('includes invalid for iphone');
       }
       if (!isFinite(Number(iphoneNumber)) || Number(iphoneNumber) <= 0) {
@@ -462,7 +477,7 @@ export class AdminController {
         throw new BadRequestException('iphone_model invalid for iphone_number');
       }
     }
-    if (productCondition !== 'Nuevo' && includes === 'Otros' && !includesExtra) {
+    if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && includes === 'Otros' && !includesExtra) {
       throw new BadRequestException('includes_extra required');
     }
     if (productCondition && productCondition !== 'Nuevo') {
