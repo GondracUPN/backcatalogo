@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, UnauthorizedException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Post, Put, UnauthorizedException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto, RegisterDto } from '../../dtos/auth.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -62,6 +62,45 @@ export class AuthController {
     return { id: user.id, username: user.username, role: String(user.role).toLowerCase() };
   }
 
+  @Put('users/:id')
+  async updateUser(@Headers('authorization') authHeader: string, @Param('id') idRaw: string, @Body() body: any) {
+    const payload = this.requireRole(authHeader, ['ADMIN']);
+    if (!payload) throw new ForbiddenException();
+    const id = Number(idRaw);
+    if (!Number.isInteger(id) || id <= 0) throw new BadRequestException('invalid user id');
+    const user = await this.usersRepo.findOne({ where: { id } });
+    if (!user) throw new BadRequestException('user not found');
+
+    const username = String(body?.username ?? user.username).trim();
+    const role = String(body?.role ?? user.role).trim().toUpperCase();
+    const password = String(body?.password || '');
+    if (username.length < 3) throw new BadRequestException('username must be at least 3 characters');
+    if (!['ADMIN', 'VENDEDOR', 'CLIENTE'].includes(role)) throw new BadRequestException('invalid role');
+    if (password && password.length < 6) throw new BadRequestException('password must be at least 6 characters');
+    const duplicate = await this.usersRepo.findOne({ where: { username } });
+    if (duplicate && duplicate.id !== id) throw new ConflictException('username already exists');
+    if (Number(payload.sub) === id && role !== 'ADMIN') throw new BadRequestException('you cannot remove your own admin role');
+
+    user.username = username;
+    user.role = role as any;
+    if (password) user.passwordHash = await bcrypt.hash(password, 10);
+    const saved = await this.usersRepo.save(user);
+    return { id: saved.id, username: saved.username, role: String(saved.role).toLowerCase() };
+  }
+
+  @Delete('users/:id')
+  async deleteUser(@Headers('authorization') authHeader: string, @Param('id') idRaw: string) {
+    const payload = this.requireRole(authHeader, ['ADMIN']);
+    if (!payload) throw new ForbiddenException();
+    const id = Number(idRaw);
+    if (!Number.isInteger(id) || id <= 0) throw new BadRequestException('invalid user id');
+    if (Number(payload.sub) === id) throw new BadRequestException('you cannot delete your own user');
+    const user = await this.usersRepo.findOne({ where: { id } });
+    if (!user) throw new BadRequestException('user not found');
+    await this.usersRepo.delete({ id });
+    return { ok: true };
+  }
+
   private requireRole(authHeader: string | undefined, roles: string[]) {
     const token = (authHeader || '').startsWith('Bearer ')
       ? (authHeader || '').substring(7)
@@ -69,7 +108,7 @@ export class AuthController {
     if (!token) return null;
     try {
       const payload = this.auth.verifyToken(token);
-      if (!roles.includes(payload.role)) return null;
+      if (!roles.includes(String(payload.role || '').toUpperCase())) return null;
       return payload;
     } catch {
       return null;

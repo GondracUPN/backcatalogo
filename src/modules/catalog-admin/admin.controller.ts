@@ -168,7 +168,15 @@ export class AdminController {
     const token = (authHeader || '').startsWith('Bearer ') ? (authHeader || '').substring(7) : undefined;
     if (!token) throw new UnauthorizedException();
     const payload = this.auth.verifyToken(token);
-    if (!payload || payload.role !== 'ADMIN') throw new UnauthorizedException();
+    if (!payload || String(payload.role || '').toUpperCase() !== 'ADMIN') throw new UnauthorizedException();
+    return payload;
+  }
+
+  private requireStaff(authHeader?: string) {
+    const token = (authHeader || '').startsWith('Bearer ') ? (authHeader || '').substring(7) : undefined;
+    if (!token) throw new UnauthorizedException();
+    const payload = this.auth.verifyToken(token);
+    if (!payload || !['ADMIN', 'VENDEDOR'].includes(String(payload.role || '').toUpperCase())) throw new UnauthorizedException();
     return payload;
   }
 
@@ -279,7 +287,7 @@ export class AdminController {
     @Query('soloTiendasPawn') soloTiendasPawn?: string,
     @Query('savedPawnOnly') savedPawnOnly?: string,
   ) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const shouldSyncPawnStores = pawnMode === 'sync' || truthyQuery(soloTiendasPawn);
     const shouldReadSavedPawnOnly = pawnMode === 'saved' || truthyQuery(savedPawnOnly);
     try {
@@ -383,7 +391,7 @@ export class AdminController {
 
   @Put('staged/:id')
   async updateStaged(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const allowed = [
       'title',
       'price',
@@ -526,7 +534,7 @@ export class AdminController {
 
   @Post('staged/:id/publish')
   async publish(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const staged = await this.stagedRepo.findOne({ where: { id } });
     if (!staged) throw new BadRequestException('not found');
     const saleType = String(staged.sale_type || '').toUpperCase();
@@ -678,7 +686,7 @@ export class AdminController {
 
   @Get('catalog')
   async listAdminCatalog(@Headers('authorization') authHeader: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const publishedRows = await this.publicRepo.find({
       where: { is_published: true as any },
       order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
@@ -901,7 +909,7 @@ export class AdminController {
     @Param('productId') productId: string,
     @Body() body: any,
   ) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensureCartAvailable();
 
     const replacementStagedId = String(body?.stagedId || body?.replacementStagedId || '').trim();
@@ -1152,7 +1160,7 @@ export class AdminController {
     @Param('productId') productId: string,
     @Body() body?: any,
   ) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const product = await this.productRepo.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
     // Marcar el producto como vendido (se acepta fecha en body pero no se persiste aún)
@@ -1366,7 +1374,7 @@ export class AdminController {
 
   @Get('sales')
   async listSales(@Headers('authorization') authHeader: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
     const rows = await mgr.query(`
@@ -1384,7 +1392,7 @@ export class AdminController {
     @Param('saleId') saleId: string,
     @Body() body: any,
   ) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
 
@@ -1410,7 +1418,7 @@ export class AdminController {
 
   @Get('contact-requests')
   async listContactRequests(@Headers('authorization') authHeader: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensureContactRequestsTable();
     const mgr = this.productRepo.manager;
     const rows = await mgr.query(`
@@ -1437,7 +1445,7 @@ export class AdminController {
 
   @Post('contact-requests/:id/attended')
   async markContactRequestAttended(@Headers('authorization') authHeader: string, @Param('id') id: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensureContactRequestsTable();
     await this.ensurePossibleClientsTable();
     const mgr = this.productRepo.manager;
@@ -1498,7 +1506,7 @@ export class AdminController {
 
   @Get('possible-clients')
   async listPossibleClients(@Headers('authorization') authHeader: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     const rows = await this.productRepo.manager.query(`
       SELECT *
@@ -1513,7 +1521,7 @@ export class AdminController {
 
   @Put('possible-clients/:id')
   async updatePossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     const mgr = this.productRepo.manager;
     const currentRows = await mgr.query(`SELECT * FROM possible_clients WHERE id = $1 LIMIT 1`, [id]);
@@ -1580,7 +1588,7 @@ export class AdminController {
 
   @Post('possible-clients/:id/discard')
   async discardPossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     await this.productRepo.manager.query(`DELETE FROM possible_clients WHERE id = $1`, [id]);
     return { ok: true };
@@ -1588,7 +1596,7 @@ export class AdminController {
 
   @Post('possible-clients/:id/purchase')
   async markPossibleClientPurchased(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireAdmin(authHeader);
+    this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     const customerKind = String(body?.customerKind || '').trim();
     const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
