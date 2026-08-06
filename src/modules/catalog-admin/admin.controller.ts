@@ -209,6 +209,7 @@ export class AdminController {
         )`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_name text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_phone text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS product_title text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
@@ -584,9 +585,9 @@ export class AdminController {
         { stock: nextStock, status: nextStock <= 0 ? ('sold' as any) : staged.status },
       );
       await mgr.query(
-        `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [staged.source_id, staged.sku || '', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+        `INSERT INTO sold_records (product_id, sku, product_title, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [staged.source_id, staged.sku || '', staged.title || staged.sku || 'Producto', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
       );
       await mgr.query(
         `INSERT INTO possible_clients (
@@ -1550,9 +1551,9 @@ export class AdminController {
       : null;
     const mgr = this.productRepo.manager;
     await mgr.query(
-      `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [productId, sku, price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+      `INSERT INTO sold_records (product_id, sku, product_title, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [productId, sku, product.title || sku || 'Producto', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
     );
     await this.ensurePossibleClientsTable();
     await mgr.query(
@@ -1681,8 +1682,21 @@ export class AdminController {
     this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
+    await this.ensurePossibleClientsTable();
     const rows = await mgr.query(`
-      SELECT sr.*, p.title
+      SELECT sr.*,
+        COALESCE(
+          NULLIF(sr.product_title, ''),
+          p.title,
+          (
+            SELECT pc.product_title
+            FROM possible_clients pc
+            WHERE pc.product_id = sr.product_id
+              AND pc.request_type IN ('manual-inventory-sale', 'manual-sale')
+            ORDER BY pc.purchased_at DESC NULLS LAST, pc.created_at DESC
+            LIMIT 1
+          )
+        ) AS title
       FROM sold_records sr
       LEFT JOIN products p ON p.id = sr.product_id
       ORDER BY sr.sold_at DESC, sr.created_at DESC
@@ -1717,7 +1731,18 @@ export class AdminController {
       [salePrice, soldAt, saleId],
     );
     const product = await this.productRepo.findOne({ where: { id: current.product_id } });
-    return { ok: true, item: { ...rows[0], title: product?.title || null } };
+    let title = String(current.product_title || product?.title || '').trim();
+    if (!title) {
+      await this.ensurePossibleClientsTable();
+      const titleRows = await mgr.query(
+        `SELECT product_title FROM possible_clients
+         WHERE product_id = $1 AND request_type IN ('manual-inventory-sale', 'manual-sale')
+         ORDER BY purchased_at DESC NULLS LAST, created_at DESC LIMIT 1`,
+        [current.product_id],
+      );
+      title = String(titleRows?.[0]?.product_title || '').trim();
+    }
+    return { ok: true, item: { ...rows[0], title: title || null } };
   }
 
   @Get('contact-requests')
