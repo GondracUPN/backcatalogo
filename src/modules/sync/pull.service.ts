@@ -419,7 +419,13 @@ export class PullSyncService {
     const product = item?.product || item?.producto || item;
     const staged = item?.staged || item?.staged_product || item?.stage || null;
     const rawSku = this.pickValue(product?.sku, staged?.sku, item?.sku);
-    const sku = rawSku ? String(rawSku).trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS') : rawSku;
+    const sku = rawSku
+      ? String(rawSku)
+          .trim()
+          .replace(/^prev[-_\s]*svc(?=[-_\s]*\d)/i, 'PREV-MS')
+          .replace(/^svc(?=[-_\s]*\d)/i, 'MS')
+          .toUpperCase()
+      : rawSku;
     const sourceRaw = this.pickValue(staged?.source_id, item?.id, product?.id, sku);
     const sourceId = sourceRaw
       ? (/^[0-9a-f-]{36}$/i.test(String(sourceRaw)) ? String(sourceRaw) : this.toDeterministicUuid(String(sourceRaw)))
@@ -562,13 +568,22 @@ export class PullSyncService {
     const row = this.stagedRowFromItem(item);
     if (!row) return;
 
+    // Inventory synchronization must never resurrect a unit already sold
+    // locally, even when the upstream service still reports it as available.
+    const [existingProduct, existingStaged] = await Promise.all([
+      this.products.findOne({ where: { sku: row.sku } }),
+      this.staged.findOne({ where: { source_id: row.source_id } }),
+    ]);
+    const productWasSold = String(existingProduct?.status || '').toLowerCase() === 'sold';
+    const stagedWasSold = String(existingStaged?.status || '').toLowerCase() === 'sold';
+
     await this.products.upsert(
       {
         sku: row.sku,
         title: row.title,
         price: row.price,
-        status: row.status,
-        stock: row.stock,
+        status: productWasSold ? ('sold' as any) : row.status,
+        stock: productWasSold ? 0 : row.stock,
         sale_type: asSaleType(row.sale_type ?? null),
         discount: row.discount ?? null,
         final_price: row.final_price ?? null,
@@ -591,8 +606,8 @@ export class PullSyncService {
         sku: row.sku,
         title: row.title,
         price: row.price,
-        status: row.status,
-        stock: row.stock,
+        status: stagedWasSold || productWasSold ? ('sold' as any) : row.status,
+        stock: stagedWasSold || productWasSold ? 0 : row.stock,
         sale_type: row.sale_type,
         discount: row.discount,
         final_price: row.final_price,

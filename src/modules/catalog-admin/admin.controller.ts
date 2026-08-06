@@ -89,6 +89,16 @@ function normalizeMsSku(value: unknown) {
   return number ? `MS-${number}` : raw;
 }
 
+function normalizeRepairSku(value: unknown) {
+  const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (!raw) return '';
+  const preventa = raw.match(/^PREV[-_]*(?:SVC|MS)[-_]*(\d+)$/i);
+  if (preventa) return `PREV-MS-${preventa[1]}`;
+  const legacy = raw.match(/^(?:SVC|MS)[-_]*(\d+)$/i);
+  if (legacy) return `MS-${legacy[1]}`;
+  return raw;
+}
+
 function randomSkuToken() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
 }
@@ -532,6 +542,76 @@ export class AdminController {
     return { ok: true };
   }
 
+  @Post('staged/:id/sold')
+  async markStagedSold(
+    @Headers('authorization') authHeader: string,
+    @Param('id') id: string,
+    @Body() body?: any,
+  ) {
+    this.requireStaff(authHeader);
+    const staged = await this.stagedRepo.findOne({ where: { id } });
+    if (!staged) throw new BadRequestException('staged product not found');
+    if (['published', 'hidden', 'sold'].includes(String(staged.status || '').toLowerCase()) || Number(staged.stock || 0) <= 0) {
+      throw new BadRequestException('staged product out of stock');
+    }
+
+    const soldAt = saleDateValue(body?.saleDate);
+    if (!soldAt) throw new BadRequestException('invalid sale date');
+    const explicitSalePrice = body?.salePrice;
+    const parsedSalePrice = explicitSalePrice === undefined || explicitSalePrice === null || explicitSalePrice === ''
+      ? Number.NaN
+      : Number(explicitSalePrice);
+    const fallbackPrice = Number(staged.price || 0);
+    const price = Number.isFinite(parsedSalePrice) ? parsedSalePrice : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
+    if (price < 0) throw new BadRequestException('invalid sale price');
+
+    const customerName = String(body?.name || body?.customerName || '').trim();
+    const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '');
+    if (!customerName || !customerPhone) throw new BadRequestException('customer name and phone required');
+    const customerKindRaw = String(body?.customerKind || '').trim();
+    const customerKind = ['tranquilo', 'regateador'].includes(customerKindRaw) ? customerKindRaw : 'tranquilo';
+    const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
+    const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : null;
+    const saleLocation = salePlaceType === 'otro' ? (String(body?.saleLocation || '').trim() || null) : null;
+    const nextStock = Math.max(0, Number(staged.stock || 0) - 1);
+
+    await this.ensureSoldRecordsTable();
+    await this.ensurePossibleClientsTable();
+    await this.productRepo.manager.transaction(async (mgr) => {
+      await mgr.update(
+        StagedProduct,
+        { id },
+        { stock: nextStock, status: nextStock <= 0 ? ('sold' as any) : staged.status },
+      );
+      await mgr.query(
+        `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [staged.source_id, staged.sku || '', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+      );
+      await mgr.query(
+        `INSERT INTO possible_clients (
+          source_request_id, cart_id, request_type, product_id, product_title, product_color, product_price,
+          customer_name, customer_phone, location_scope, location_value, status, customer_kind,
+          sale_place_type, sale_location, purchased_at
+        ) VALUES (NULL,$1,'manual-inventory-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11)`,
+        [
+          `manual-inventory-${id}-${Date.now()}`,
+          staged.source_id,
+          staged.title || staged.sku || 'Producto',
+          staged.color || null,
+          price,
+          customerName,
+          customerPhone,
+          customerKind,
+          salePlaceType,
+          saleLocation,
+          soldAt,
+        ],
+      );
+    });
+    return { ok: true, remainingStock: nextStock };
+  }
+
   @Post('staged/:id/publish')
   async publish(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
     this.requireStaff(authHeader);
@@ -684,6 +764,158 @@ export class AdminController {
     return { ok: true, result: pub.identifiers?.[0], warnings: validation.warnings };
   }
 
+  @Get('catalog-repairs')
+  async listCatalogRepairs(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    const [publicRows, products, stagedRows] = await Promise.all([
+      this.publicRepo.find({ where: { is_published: true as any }, order: { updated_at: 'DESC' as any }, take: 2000 }),
+      this.productRepo.find({ take: 5000 }),
+      this.stagedRepo.find({ order: { updated_at: 'DESC' as any }, take: 5000 }),
+    ]);
+    const productById = new Map(products.map((product) => [product.id, product] as const));
+    const stagedBySku = new Map<string, StagedProduct[]>();
+    for (const staged of stagedRows) {
+      const key = normalizeRepairSku(staged.sku);
+      if (key) stagedBySku.set(key, [...(stagedBySku.get(key) || []), staged]);
+    }
+    const publishedSkuCounts = new Map<string, number>();
+    for (const pub of publicRows) {
+      const product = productById.get(pub.product_id);
+      const key = normalizeRepairSku(product?.sku);
+      if (key) publishedSkuCounts.set(key, (publishedSkuCounts.get(key) || 0) + 1);
+    }
+
+    const items = publicRows.flatMap((pub) => {
+      const product = productById.get(pub.product_id) || null;
+      const skuKey = normalizeRepairSku(product?.sku);
+      const stagedMatches = skuKey ? (stagedBySku.get(skuKey) || []) : [];
+      const issues: Array<{ code: string; label: string; severity: 'warning' | 'critical' }> = [];
+      if (!product) {
+        issues.push({ code: 'missing-product', label: 'La publicación no tiene un producto asociado', severity: 'critical' });
+      } else {
+        if (!String(product.sku || '').trim()) issues.push({ code: 'missing-sku', label: 'El producto no tiene SKU', severity: 'critical' });
+        if (!String(product.title || '').trim()) issues.push({ code: 'missing-title', label: 'El producto no tiene título', severity: 'critical' });
+        if (!Number.isFinite(Number(product.price)) || Number(product.price) <= 0) {
+          issues.push({ code: 'invalid-price', label: 'El precio publicado es inválido', severity: 'critical' });
+        }
+        if (Number(product.stock || 0) <= 0 || ['sold', 'hidden'].includes(String(product.status || '').toLowerCase())) {
+          issues.push({ code: 'invalid-status', label: 'Está agotado, vendido u oculto pero continúa publicado', severity: 'critical' });
+        }
+        if ((publishedSkuCounts.get(skuKey) || 0) > 1) {
+          issues.push({ code: 'duplicate-product', label: `Hay ${publishedSkuCounts.get(skuKey)} publicaciones con el mismo SKU`, severity: 'critical' });
+        }
+        if (!stagedMatches.length) {
+          issues.push({ code: 'missing-staged', label: 'No existe respaldo de este producto en Inventario', severity: 'critical' });
+        } else {
+          if (stagedMatches.length > 1) {
+            issues.push({ code: 'duplicate-staged', label: `Hay ${stagedMatches.length} registros de Inventario con el mismo SKU`, severity: 'warning' });
+          }
+          if (!stagedMatches.some((staged) => String(staged.status || '').toLowerCase() === 'published')) {
+            issues.push({ code: 'status-mismatch', label: 'La publicación y el estado de Inventario están desincronizados', severity: 'warning' });
+          }
+          if (stagedMatches.some((staged) => {
+            const notes = parseNotes(staged.notes);
+            return normalizeRepairSku(notes?.linkedMainSku) === normalizeRepairSku(staged.sku);
+          })) {
+            issues.push({ code: 'circular-link', label: 'El producto tiene una referencia redundante hacia sí mismo', severity: 'warning' });
+          }
+        }
+      }
+      if (!String(pub.category || '').trim()) {
+        issues.push({ code: 'missing-category', label: 'La publicación no tiene categoría', severity: 'warning' });
+      }
+      if (!issues.length) return [];
+      return [{
+        publicId: pub.id,
+        productId: pub.product_id,
+        title: product?.title || pub.seo_title || pub.slug || 'Producto sin título',
+        sku: product?.sku || '',
+        slug: pub.slug,
+        category: pub.category || '',
+        price: Number(product?.price || 0),
+        issues,
+        severity: issues.some((issue) => issue.severity === 'critical') ? 'critical' : 'warning',
+        updatedAt: pub.updated_at,
+      }];
+    });
+    return { items, total: items.length };
+  }
+
+  @Post('catalog-repairs/:publicId/return-to-inventory')
+  async returnCatalogRepairToInventory(
+    @Headers('authorization') authHeader: string,
+    @Param('publicId') publicId: string,
+  ) {
+    this.requireAdmin(authHeader);
+    const pub = await this.publicRepo.findOne({ where: { id: publicId } });
+    if (!pub) throw new BadRequestException('publication not found');
+    const product = await this.productRepo.findOne({ where: { id: pub.product_id } });
+    const allStaged = await this.stagedRepo.find({ take: 5000 });
+    const skuKey = normalizeRepairSku(product?.sku);
+    const rawSkuKey = String(product?.sku || '').trim().toLowerCase();
+    const exactMatches = product
+      ? allStaged.filter((staged) => String(staged.sku || '').trim().toLowerCase() === rawSkuKey)
+      : [];
+    let stagedMatches = product
+      ? (exactMatches.length ? exactMatches : allStaged.filter((staged) => normalizeRepairSku(staged.sku) === skuKey))
+      : allStaged.filter((staged) => staged.source_id === pub.product_id);
+    if (product && stagedMatches.length) {
+      const linkedSkuKeys = new Set<string>();
+      for (const staged of stagedMatches) {
+        const notes = parseNotes(staged.notes);
+        const linkedSkus = Array.isArray(notes?.linkedSkus) ? notes.linkedSkus : [];
+        linkedSkus.forEach((sku: unknown) => {
+          const key = String(sku || '').trim().toLowerCase();
+          if (key) linkedSkuKeys.add(key);
+        });
+      }
+      const linkedMatches = allStaged.filter((staged) => {
+        const rowSku = String(staged.sku || '').trim().toLowerCase();
+        const linkedMainSku = String(parseNotes(staged.notes)?.linkedMainSku || '').trim().toLowerCase();
+        return linkedSkuKeys.has(rowSku) || linkedMainSku === rawSkuKey;
+      });
+      stagedMatches = Array.from(new Map([...stagedMatches, ...linkedMatches].map((staged) => [staged.id, staged])).values());
+    }
+
+    if (!stagedMatches.length) {
+      const sourceAlreadyUsed = await this.stagedRepo.findOne({ where: { source_id: pub.product_id } });
+      const recovered = this.stagedRepo.create({
+        source_id: sourceAlreadyUsed ? randomUUID() : pub.product_id,
+        sku: product?.sku || `REC-${pub.product_id.slice(0, 8).toUpperCase()}`,
+        title: product?.title || pub.seo_title || pub.slug || 'Producto recuperado',
+        price: String(product?.price || 0),
+        stock: Math.max(0, Number(product?.stock || 0)),
+        status: 'draft' as any,
+        category: pub.category || null,
+        tags: pub.tags || null,
+        images: pub.images || [],
+        notes: stringifyNotes({ recoveredFromPublication: pub.id, recoveryReason: 'catalog-repair' }),
+        sale_type: product?.sale_type || 'VENTA_SIMPLE',
+        product_condition: product?.product_condition || null,
+        iphone_model: product?.iphone_model || null,
+        iphone_number: product?.iphone_number ?? null,
+        storage_gb: product?.storage_gb ?? null,
+        battery_cycles: product?.battery_cycles ?? null,
+        battery_health: product?.battery_health ?? null,
+        color: product?.color || null,
+        includes: product?.includes || null,
+        includes_extra: product?.includes_extra || null,
+        keyboard_layout: product?.keyboard_layout || null,
+        variant_group: product?.variant_group || null,
+        discount: product?.discount || null,
+        final_price: product?.final_price || null,
+        min_offer_price: product?.min_offer_price || null,
+      });
+      stagedMatches = [await this.stagedRepo.save(recovered)];
+    } else {
+      await this.stagedRepo.update({ id: In(stagedMatches.map((staged) => staged.id)) }, { status: 'draft' as any });
+    }
+
+    await this.publicRepo.update({ id: pub.id }, { is_published: false });
+    if (product) await this.productRepo.update({ id: product.id }, { status: 'draft' as any });
+    return { ok: true, inventoryIds: stagedMatches.map((staged) => staged.id) };
+  }
+
   @Get('catalog')
   async listAdminCatalog(@Headers('authorization') authHeader: string) {
     this.requireStaff(authHeader);
@@ -720,14 +952,26 @@ export class AdminController {
       if (!mainSku) continue;
       linkedByMainSku.set(mainSku, [...(linkedByMainSku.get(mainSku) || []), linked]);
     }
-    const childSkuKeys = new Set<string>();
-    for (const stagedRow of [...stagedRows, ...linkedRowsSource]) {
+    const allRelevantStagedRows = [...stagedRows, ...linkedRowsSource];
+    // A published merge may retain an old linkedMainSku after that SKU later
+    // becomes the main row. Trust linkedSkuGroup.mainSku when it points to the
+    // row itself, otherwise circular links can hide every member of the group.
+    const protectedMainSkuKeys = new Set<string>();
+    for (const stagedRow of allRelevantStagedRows) {
       const rowNotes = parseNotes(stagedRow.notes);
-      if (rowNotes?.linkedMainSku) childSkuKeys.add(String(stagedRow.sku || '').trim().toLowerCase());
+      const rowSkuKey = String(stagedRow.sku || '').trim().toLowerCase();
+      const declaredMainKey = String(rowNotes?.linkedSkuGroup?.mainSku || '').trim().toLowerCase();
+      if (rowSkuKey && declaredMainKey === rowSkuKey) protectedMainSkuKeys.add(rowSkuKey);
+    }
+    const childSkuKeys = new Set<string>();
+    for (const stagedRow of allRelevantStagedRows) {
+      const rowNotes = parseNotes(stagedRow.notes);
+      const rowSkuKey = String(stagedRow.sku || '').trim().toLowerCase();
+      if (rowNotes?.linkedMainSku && rowSkuKey && !protectedMainSkuKeys.has(rowSkuKey)) childSkuKeys.add(rowSkuKey);
       const linkedSkus = Array.isArray(rowNotes?.linkedSkus) ? rowNotes.linkedSkus : [];
       linkedSkus.forEach((sku: unknown) => {
         const key = String(sku || '').trim().toLowerCase();
-        if (key) childSkuKeys.add(key);
+        if (key && !protectedMainSkuKeys.has(key)) childSkuKeys.add(key);
       });
     }
     const normalizeTitle = (value: unknown) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
@@ -1195,9 +1439,16 @@ export class AdminController {
         status: nextStock <= 0 ? ('sold' as any) : ('listed' as any),
       },
     );
+    if (nextStock <= 0) {
+      await this.publicRepo.update({ product_id: productId }, { is_published: false });
+    }
     if (soldLinked) {
-      await this.stagedRepo.update({ id: soldLinked.id }, { status: 'sold' as any });
+      await this.stagedRepo.update({ id: soldLinked.id }, { status: 'sold' as any, stock: 0 });
       await this.productRepo.update({ sku: soldLinked.sku }, { status: 'sold' as any, stock: 0 });
+      const soldLinkedProduct = await this.productRepo.findOne({ where: { sku: soldLinked.sku } });
+      if (soldLinkedProduct) {
+        await this.publicRepo.update({ product_id: soldLinkedProduct.id }, { is_published: false });
+      }
       if (mainStaged) {
         const updatedMainNotes = parseNotes(mainStaged.notes);
         const remainingLinkedSkus = (Array.isArray(updatedMainNotes?.linkedSkus) ? updatedMainNotes.linkedSkus : [])
@@ -1219,7 +1470,7 @@ export class AdminController {
         );
       }
     } else if (nextStock <= 0 && mainStaged) {
-      await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any });
+      await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any, stock: 0 });
     }
     // Registrar venta en tabla auxiliar (auto-creación si no existe)
     const soldAt = saleDateValue(body?.saleDate);
