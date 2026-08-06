@@ -775,18 +775,23 @@ export class AdminController {
     const productById = new Map(products.map((product) => [product.id, product] as const));
     const stagedBySku = new Map<string, StagedProduct[]>();
     for (const staged of stagedRows) {
+      if (String(staged.status || '').toLowerCase() === 'sold') continue;
       const key = normalizeRepairSku(staged.sku);
       if (key) stagedBySku.set(key, [...(stagedBySku.get(key) || []), staged]);
     }
     const publishedSkuCounts = new Map<string, number>();
     for (const pub of publicRows) {
       const product = productById.get(pub.product_id);
+      if (String(product?.status || '').toLowerCase() === 'sold') continue;
       const key = normalizeRepairSku(product?.sku);
       if (key) publishedSkuCounts.set(key, (publishedSkuCounts.get(key) || 0) + 1);
     }
 
     const items = publicRows.flatMap((pub) => {
       const product = productById.get(pub.product_id) || null;
+      // Un producto vendido/no disponible es un estado comercial válido y se
+      // conserva como historial; no debe aparecer como una reparación.
+      if (String(product?.status || '').toLowerCase() === 'sold') return [];
       const skuKey = normalizeRepairSku(product?.sku);
       const stagedMatches = skuKey ? (stagedBySku.get(skuKey) || []) : [];
       const issues: Array<{ code: string; label: string; severity: 'warning' | 'critical' }> = [];
@@ -798,8 +803,8 @@ export class AdminController {
         if (!Number.isFinite(Number(product.price)) || Number(product.price) <= 0) {
           issues.push({ code: 'invalid-price', label: 'El precio publicado es inválido', severity: 'critical' });
         }
-        if (Number(product.stock || 0) <= 0 || ['sold', 'hidden'].includes(String(product.status || '').toLowerCase())) {
-          issues.push({ code: 'invalid-status', label: 'Está agotado, vendido u oculto pero continúa publicado', severity: 'critical' });
+        if (String(product.status || '').toLowerCase() === 'hidden') {
+          issues.push({ code: 'invalid-status', label: 'Está oculto pero continúa publicado', severity: 'critical' });
         }
         if ((publishedSkuCounts.get(skuKey) || 0) > 1) {
           issues.push({ code: 'duplicate-product', label: `Hay ${publishedSkuCounts.get(skuKey)} publicaciones con el mismo SKU`, severity: 'critical' });
@@ -930,13 +935,23 @@ export class AdminController {
     const skus = products.map((p) => p.sku).filter(Boolean);
     const pubs = publishedRows;
     const stagedRows = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
-    const linkedRowsSource = skus.length
+    const linkedRowsSourceRaw = skus.length
       ? await this.stagedRepo.find({
           where: { status: 'published' as any },
           order: { updated_at: 'DESC' as any },
           take: 1000,
         })
       : [];
+    await this.ensureSoldRecordsTable();
+    const soldSkuRows = await this.productRepo.manager.query(
+      `SELECT DISTINCT LOWER(COALESCE(sku, '')) AS sku FROM sold_records WHERE COALESCE(sku, '') <> ''`,
+    );
+    const soldSkuKeys = new Set(soldSkuRows.map((row: any) => String(row?.sku || '').trim().toLowerCase()).filter(Boolean));
+    // Ocultar unidades históricamente vendidas aunque un estado antiguo haya
+    // quedado incorrectamente como "published" en staged_products.
+    const linkedRowsSource = linkedRowsSourceRaw.filter(
+      (row) => !soldSkuKeys.has(String(row.sku || '').trim().toLowerCase()),
+    );
     const skuSet = new Set(skus);
     const linkedRows = linkedRowsSource.filter((row) => {
       const linkedNotes = parseNotes(row.notes);
@@ -1429,9 +1444,26 @@ export class AdminController {
         linkedSkusFromMain.some((sku: string) => sku.toLowerCase() === rowSku.toLowerCase())
       );
     });
-    const soldLinked = availableLinked[0] || null;
+    const requestedStagedId = String(body?.stagedId || '').trim();
+    const requestedLinked = requestedStagedId
+      ? availableLinked.find((row) => String(row.id) === requestedStagedId)
+      : null;
+    if (requestedStagedId && !requestedLinked) {
+      throw new BadRequestException('requested unit is not available in this group');
+    }
+    const soldLinked = requestedLinked || availableLinked[0] || null;
     const soldUnitSku = soldLinked?.sku || product.sku || '';
-    const nextStock = Math.max(0, currentStock - 1);
+    const soldAt = saleDateValue(body?.saleDate);
+    if (!soldAt) throw new BadRequestException('invalid sale date');
+    await this.ensureSoldRecordsTable();
+    const existingSale = requestedStagedId && soldUnitSku
+      ? await this.productRepo.manager.query(
+          `SELECT id FROM sold_records WHERE LOWER(COALESCE(sku, '')) = LOWER($1) LIMIT 1`,
+          [soldUnitSku],
+        )
+      : [];
+    const alreadyRecorded = existingSale.length > 0;
+    const nextStock = alreadyRecorded ? currentStock : Math.max(0, currentStock - 1);
     await this.productRepo.update(
       { id: productId },
       {
@@ -1472,9 +1504,10 @@ export class AdminController {
     } else if (nextStock <= 0 && mainStaged) {
       await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any, stock: 0 });
     }
+    // La venta ya existía: solo se retira la unidad fantasma del grupo. No se
+    // vuelve a descontar stock ni se crea un segundo registro de venta.
+    if (alreadyRecorded) return { ok: true, reconciled: true };
     // Registrar venta en tabla auxiliar (auto-creación si no existe)
-    const soldAt = saleDateValue(body?.saleDate);
-    if (!soldAt) throw new BadRequestException('invalid sale date');
     const sku = soldUnitSku;
     const explicitSalePrice = body?.salePrice;
     const parsedSalePrice =
@@ -1495,7 +1528,6 @@ export class AdminController {
       ? (String(body?.saleLocation || '').trim() || null)
       : null;
     const mgr = this.productRepo.manager;
-    await this.ensureSoldRecordsTable();
     await mgr.query(
       `INSERT INTO sold_records (product_id, sku, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
