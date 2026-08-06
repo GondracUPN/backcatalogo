@@ -14,7 +14,7 @@ const WATCH_TYPES = new Set(['Normal', 'Ultra']);
 const WATCH_SERIES = new Set(['5', '6', '7', '8', '9', '10', '11']);
 const WATCH_CONNECTIONS = new Set(['GPS', 'GPS+Cellular', 'GPS + Cellular']);
 const WATCH_ULTRA = new Set(['1', '2', '3']);
-const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cable', 'Caja sola', 'Cable solo', 'Otros', 'Ninguno']);
+const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
 
 export type ValidationResult = {
   ok: boolean;

@@ -4,7 +4,7 @@ export type ProductStatus = 'draft' | 'listed' | 'sold' | 'hidden';
 export type SaleType = 'PREVENTA' | 'VENTA_SIMPLE' | 'PROMOCION' | 'OFERTA';
 export type IphoneModel = 'Normal' | 'Plus' | 'Pro' | 'Pro Max' | 'Mini' | 'E';
 export type ProductCondition = 'Nuevo' | 'Usado' | 'Open Box' | 'Arreglado';
-export type IncludesKind = 'Caja + Cubo + Cable' | 'Cubo + Cable' | 'Solo Cable' | 'Caja + Cable' | 'Caja sola' | 'Cable solo' | 'Ninguno' | 'Otros';
+export type IncludesKind = 'Caja + Cubo + Cable' | 'Caja + Cubo' | 'Caja + Cable' | 'Cubo + Cable' | 'Caja sola' | 'Cubo solo' | 'Cable solo' | 'Solo Cable' | 'Ninguno' | 'Otros';
 export type KeyboardLayout = 'Ingles' | 'Espanol' | 'Otro';
 
 @Entity('products')

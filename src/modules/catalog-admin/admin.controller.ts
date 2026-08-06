@@ -12,8 +12,8 @@ import { validateProductBeforePublish } from '../../utils/product-validation';
 
 const SALE_TYPES = new Set(['PREVENTA', 'VENTA_SIMPLE', 'PROMOCION', 'OFERTA']);
 const IPHONE_MODELS = new Set(['Normal', 'Plus', 'Pro', 'Pro Max', 'Mini', 'E']);
-const INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Cubo + Cable', 'Solo Cable', 'Caja + Cable', 'Caja sola', 'Cable solo', 'Ninguno', 'Otros']);
-const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cable', 'Caja sola', 'Cable solo', 'Otros', 'Ninguno']);
+const INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Ninguno', 'Otros']);
+const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
 const KEYBOARD_LAYOUTS = new Set(['Ingles', 'Espanol', 'Otro']);
 const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
 const CATEGORIES = new Set(['macbook', 'ipad', 'iphone', 'watch', 'accesorios', 'otros']);
