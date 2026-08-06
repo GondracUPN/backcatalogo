@@ -759,7 +759,18 @@ export class AdminController {
       }
     }
     if (allMergeIds.length) {
-      await this.stagedRepo.update({ id: In(allMergeIds) }, { status: 'published' as any, title: publishTitle });
+      await this.stagedRepo.update(
+        { id: In(allMergeIds) },
+        {
+          status: 'published' as any,
+          title: publishTitle,
+          price: String(salePrice ?? '0'),
+          sale_type: saleType,
+          discount: staged.discount || null,
+          final_price: finalPrice !== null ? String(finalPrice) : null,
+          min_offer_price: staged.min_offer_price || null,
+        },
+      );
     }
     return { ok: true, result: pub.identifiers?.[0], warnings: validation.warnings };
   }
@@ -1023,7 +1034,17 @@ export class AdminController {
           images: pub?.images || staged?.images || [],
           product,
           staged,
-          linkedStaged: [...linkedExplicit, ...linkedFallback],
+          // Las unidades enlazadas forman un único stock publicado y comparten
+          // el precio comercial del producto principal. Sus precios antiguos
+          // de Inventario no deben mostrarse como precios de venta distintos.
+          linkedStaged: [...linkedExplicit, ...linkedFallback].map((linked) => ({
+            ...linked,
+            price: product.price,
+            sale_type: product.sale_type,
+            discount: product.discount,
+            final_price: product.final_price,
+            min_offer_price: product.min_offer_price,
+          })),
         };
       })
       .sort((a, b) => (publishedRank.get(a.product_id) ?? 999999) - (publishedRank.get(b.product_id) ?? 999999));
