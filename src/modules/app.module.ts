@@ -17,6 +17,7 @@ import { AdminModule } from './catalog-admin/admin.module';
 import { OrdersModule } from './orders/orders.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { CartModule } from './cart/cart.module';
+import { MarketplaceBridgeModule } from './marketplace-bridge/marketplace-bridge.module';
 import * as dotenv from 'dotenv';
 
 // Cargar variables de entorno antes de leer process.env en la configuración
@@ -38,6 +39,7 @@ dotenv.config();
     OrdersModule,
     CatalogModule,
     CartModule,
+    MarketplaceBridgeModule,
   ],
 })
 export class AppModule {}
