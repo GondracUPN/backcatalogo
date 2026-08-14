@@ -277,8 +277,11 @@ export class PullSyncService {
     const category = String(this.pickValue(staged?.category, item?.category, product?.category, specs?.tipo, staged?.tipo, item?.tipo, product?.tipo, (parsed as any)?.category, '') || '').trim();
     const isWatch = /watch/i.test(category);
     const watchLine = String(this.pickValue(staged?.watchType, item?.watchType, product?.watchType, specs?.watchType, detail?.watchType, detail?.gama, (parsed as any)?.watchType, '') || '').trim();
-    const watchGeneration = String(this.pickValue(staged?.watchSeries, item?.watchSeries, product?.watchSeries, staged?.watchVersion, item?.watchVersion, product?.watchVersion, specs?.watchSeries, specs?.watchVersion, detail?.watchSeries, detail?.watchVersion, detail?.generacion, (parsed as any)?.watchSeries, (parsed as any)?.watchVersion, '') || '').trim();
     const watchType = /ultra/i.test(watchLine) ? 'Ultra' : (isWatch || /series|se|normal/i.test(watchLine) ? 'Normal' : undefined);
+    const watchGeneration = String(watchType === 'Ultra'
+      ? this.pickValue(staged?.watchVersion, item?.watchVersion, product?.watchVersion, specs?.watchVersion, detail?.watchVersion, detail?.generacion, (parsed as any)?.watchVersion, staged?.watchSeries, item?.watchSeries, product?.watchSeries, specs?.watchSeries, detail?.watchSeries, (parsed as any)?.watchSeries, '')
+      : this.pickValue(staged?.watchSeries, item?.watchSeries, product?.watchSeries, specs?.watchSeries, detail?.watchSeries, detail?.generacion, (parsed as any)?.watchSeries, staged?.watchVersion, item?.watchVersion, product?.watchVersion, specs?.watchVersion, detail?.watchVersion, (parsed as any)?.watchVersion, '')
+    || '').trim();
     const watchNumber = watchGeneration.replace(/^(?:series|ultra|se)\s*/i, '').trim() || undefined;
     const rawWatchConnection = this.pickValue(staged?.watchConnection, item?.watchConnection, product?.watchConnection, specs?.watchConnection, detail?.watchConnection, detail?.conexion, detail?.conectividad, (parsed as any)?.watchConnection);
     const watchConnection = rawWatchConnection === undefined || String(rawWatchConnection).trim() === '' ? undefined : (/cel/i.test(String(rawWatchConnection)) ? 'GPS + Cellular' : 'GPS');

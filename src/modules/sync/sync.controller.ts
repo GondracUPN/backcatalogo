@@ -186,9 +186,12 @@ export class SyncController {
       ? null
       : Number(batteryHealthValue);
     const watchLine = String(p?.watchType ?? p?.watch_type ?? sourceSpecs?.watchType ?? sourceDetail?.watchType ?? sourceDetail?.gama ?? '').trim();
-    const watchGeneration = String(p?.watchSeries ?? p?.watch_series ?? p?.watchVersion ?? p?.watch_version ?? sourceSpecs?.watchSeries ?? sourceSpecs?.watchVersion ?? sourceDetail?.watchSeries ?? sourceDetail?.watchVersion ?? sourceDetail?.generacion ?? '').trim();
     const isWatch = /watch/i.test(String(sourceSpecs?.tipo || p?.category || ''));
     const watchType = /ultra/i.test(watchLine) ? 'Ultra' : (isWatch || /series|se|normal/i.test(watchLine) ? 'Normal' : null);
+    const watchGeneration = String(watchType === 'Ultra'
+      ? (p?.watchVersion ?? p?.watch_version ?? sourceSpecs?.watchVersion ?? sourceDetail?.watchVersion ?? sourceDetail?.generacion ?? p?.watchSeries ?? p?.watch_series ?? sourceSpecs?.watchSeries ?? sourceDetail?.watchSeries ?? '')
+      : (p?.watchSeries ?? p?.watch_series ?? sourceSpecs?.watchSeries ?? sourceDetail?.watchSeries ?? sourceDetail?.generacion ?? p?.watchVersion ?? p?.watch_version ?? sourceSpecs?.watchVersion ?? sourceDetail?.watchVersion ?? '')
+    ).trim();
     const watchNumber = watchGeneration.replace(/^(?:series|ultra|se)\s*/i, '').trim() || null;
     const rawWatchConnection = p?.watchConnection ?? p?.watch_connection ?? sourceSpecs?.watchConnection ?? sourceDetail?.watchConnection ?? sourceDetail?.conexion ?? sourceDetail?.conectividad ?? null;
     const watchConnection = rawWatchConnection == null || String(rawWatchConnection).trim() === '' ? null : (/cel/i.test(String(rawWatchConnection)) ? 'GPS + Cellular' : 'GPS');

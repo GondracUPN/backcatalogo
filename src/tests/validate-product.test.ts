@@ -1,4 +1,4 @@
-import { validateProductBeforePublish } from '../utils/product-validation';
+import { buildAppleWatchTitle, buildIphoneTitle, validateProductBeforePublish } from '../utils/product-validation';
 import { StagedProduct } from '../entities/staged-product.entity';
 
 function makeBase(): StagedProduct {
@@ -36,6 +36,19 @@ function makeBase(): StagedProduct {
 function assert(cond: any, message: string) {
   if (!cond) throw new Error(message);
 }
+
+assert(
+  buildIphoneTitle(17, 'Pro Max', 1024, 'Naranja') === 'iPhone 17 Pro Max 1TB Naranja',
+  '1024 GB debe mostrarse como 1TB en el titulo',
+);
+assert(
+  buildAppleWatchTitle('Ultra', '', '3', '49 mm', 'GPS + Cellular') === 'Apple Watch Ultra 3 49 mm GPS + Cellular',
+  'el titulo del Apple Watch debe incluir version, tamaño y conexion',
+);
+assert(
+  buildIphoneTitle(17, 'Pro Max', '1 TB', 'Naranja') === 'iPhone 17 Pro Max 1TB Naranja',
+  '1 TB no debe recibir otro sufijo GB',
+);
 
 const base = makeBase();
 const res = validateProductBeforePublish(base);

@@ -68,11 +68,34 @@ function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
 export function buildIphoneTitle(number?: number | string | null, model?: string | null, storageGb?: number | string | null, color?: string | null) {
   const n = number ? String(number).trim() : '';
   const m = model ? String(model).trim() : '';
-  const s = storageGb ? String(storageGb).trim() : '';
+  const rawStorage = storageGb ? String(storageGb).trim().toUpperCase() : '';
+  const storageMatch = rawStorage.match(/^(\d+(?:[.,]\d+)?)\s*(GB|TB)?$/i);
+  const storageAmount = storageMatch ? Number(storageMatch[1].replace(',', '.')) : NaN;
+  const storageUnit = storageMatch?.[2]?.toUpperCase() || 'GB';
+  const s = Number.isFinite(storageAmount) && storageUnit === 'GB' && storageAmount >= 1024 && storageAmount % 1024 === 0
+    ? `${storageAmount / 1024}TB`
+    : storageMatch
+      ? `${storageAmount}${storageUnit}`
+      : rawStorage;
   const c = color ? String(color).trim() : '';
   if (!n || !m || !s || !c) return '';
   const colorCap = c.charAt(0).toUpperCase() + c.slice(1);
-  return `iPhone ${n} ${m} ${s}GB ${colorCap}`.trim();
+  return `iPhone ${n} ${m} ${s} ${colorCap}`.trim();
+}
+
+export function buildAppleWatchTitle(type: unknown, series: unknown, version: unknown, size: unknown, connection: unknown) {
+  const watchType = String(type ?? '').trim();
+  const isUltra = /ultra/i.test(watchType);
+  const generation = String(isUltra ? version : series ?? '').replace(/^(?:series|ultra|se)\s*/i, '').trim();
+  const normalizedSize = String(size ?? '').match(/\b(40|41|42|44|45|46|49)\s*(?:mm)?\b/i)?.[1] || '';
+  const rawConnection = String(connection ?? '').trim();
+  const normalizedConnection = rawConnection
+    ? (/cel/i.test(rawConnection) ? 'GPS + Cellular' : (/gps/i.test(rawConnection) ? 'GPS' : rawConnection))
+    : '';
+  if (!watchType && !generation && !normalizedSize) return '';
+  return ['Apple Watch', isUltra ? 'Ultra' : 'Series', generation, normalizedSize ? `${normalizedSize} mm` : '', normalizedConnection]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function hasWatermark(url: string) {
@@ -242,6 +265,17 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (watchType === 'Ultra') {
       const version = String(notes?.watchVersion || '').trim();
       if (!version || !WATCH_ULTRA.has(version)) errors.push('watchVersion requerido');
+    }
+    const autoTitle = buildAppleWatchTitle(
+      watchType,
+      notes?.watchSeries,
+      notes?.watchVersion,
+      notes?.watchSize ?? detalle?.['tamaño'] ?? detalle?.tamanio ?? detalle?.tamano,
+      notes?.watchConnection,
+    );
+    if (autoTitle) {
+      if (normalizeSpaces(String(staged.title || '')) !== normalizeSpaces(autoTitle)) warnings.push('titulo watch ajustado');
+      return { ok: errors.length === 0, errors, warnings, autoTitle };
     }
   }
 
