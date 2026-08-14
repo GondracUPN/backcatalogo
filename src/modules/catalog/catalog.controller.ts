@@ -52,10 +52,10 @@ export class CatalogController {
       'precioLista', 'descuentoPorc', 'color', 'batteryHealth', 'batteryCycles',
       'bateria', 'iphoneModel', 'iphoneNumber', 'storageGb', 'storage',
       'iphoneSimType', 'simType', 'chipType', 'preventaDateFrom', 'preventaDateTo',
-      'preventa', 'warrantyDate', 'warrantyEnabled', 'garantiaFecha', 'garantia',
-      'garantiaActiva', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
+      'preventa', 'warrantyDate', 'warrantyEnabled', 'warrantyType', 'garantiaFecha', 'garantia',
+      'garantiaActiva', 'garantiaTipo', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
       'watchConnection', 'watchAccessories', 'watchIncludes', 'productCondition',
-      'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
+      'watchSize', 'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
       'cuboFake', 'cableFake',
       'productDetails', 'detalles', 'detailImages', 'detailPhotos',
     ];

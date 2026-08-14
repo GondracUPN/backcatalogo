@@ -168,6 +168,19 @@ export class PullSyncService {
     return null;
   }
 
+  private normalizeIncludes(value: any): string | null {
+    if (value === undefined || value === null || value === '') return null;
+    if (Array.isArray(value)) return value.map(String).map((entry) => entry.trim()).filter(Boolean).join(' + ') || null;
+    if (typeof value === 'object') {
+      const enabled = Object.entries(value)
+        .filter(([, flag]) => ![false, 0, '0', 'false', 'no', null, undefined, ''].includes(flag as any))
+        .map(([key]) => key.trim())
+        .filter(Boolean);
+      return enabled.join(' + ') || null;
+    }
+    return String(value).trim() || null;
+  }
+
   private normalizeNotes(notes: any): string | null {
     if (!notes) return null;
     if (typeof notes === 'string') return notes;
@@ -247,15 +260,30 @@ export class PullSyncService {
     const product = item?.product || item?.producto || item || {};
     const staged = item?.staged || item?.staged_product || item?.stage || {};
     const specs = this.pickValue(staged?.specs, item?.specs, product?.specs, (parsed as any)?.specs, {}) as any;
+    const detail = this.pickValue(specs?.detalle, specs?.detail, staged?.detalle, staged?.detail, item?.detalle, item?.detail, product?.detalle, product?.detail, {}) as any;
     const battery = this.pickValue(staged?.bateria, item?.bateria, product?.bateria, specs?.bateria, (parsed as any)?.bateria, {}) as any;
     const batteryCycles = this.pickValue(staged?.battery_cycles, staged?.batteryCycles, item?.battery_cycles, item?.batteryCycles, product?.battery_cycles, product?.batteryCycles, battery?.ciclos, (parsed as any)?.batteryCycles);
     const batteryHealth = this.pickValue(staged?.battery_health, staged?.batteryHealth, item?.battery_health, item?.batteryHealth, product?.battery_health, product?.batteryHealth, battery?.salud, (parsed as any)?.batteryHealth);
-    const color = this.pickValue(staged?.color, item?.color, product?.color, specs?.color, (parsed as any)?.color);
+    const color = this.pickValue(staged?.color, item?.color, product?.color, specs?.color, detail?.color, detail?.colorName, (parsed as any)?.color);
     const condition = this.pickValue(staged?.product_condition, staged?.productCondition, item?.product_condition, item?.productCondition, product?.product_condition, product?.productCondition, specs?.estado, (parsed as any)?.productCondition, (parsed as any)?.estado);
-    const includes = this.pickValue(staged?.includes, item?.includes, product?.includes, specs?.includes, specs?.incluye, (parsed as any)?.includes);
+    const includes = this.normalizeIncludes(this.pickValue(staged?.includes, staged?.incluye, staged?.accessories, staged?.accesorios, item?.includes, item?.incluye, item?.accessories, item?.accesorios, product?.includes, product?.incluye, product?.accessories, product?.accesorios, specs?.includes, specs?.incluye, specs?.accessories, specs?.accesorios, detail?.includes, detail?.incluye, detail?.accessories, detail?.accesorios, (parsed as any)?.includes, (parsed as any)?.incluye));
     const includesExtra = this.pickValue(staged?.includes_extra, staged?.includesExtra, item?.includes_extra, item?.includesExtra, product?.includes_extra, product?.includesExtra, (parsed as any)?.includesExtra);
+    const warrantyObject = this.pickValue(staged?.warranty, staged?.garantiaDetalle, staged?.coverage, staged?.appleCare, item?.warranty, item?.garantiaDetalle, item?.coverage, item?.appleCare, product?.warranty, product?.garantiaDetalle, product?.coverage, product?.appleCare, specs?.warranty, specs?.garantiaDetalle, specs?.coverage, specs?.appleCare, (parsed as any)?.warranty, (parsed as any)?.garantiaDetalle, (parsed as any)?.coverage, (parsed as any)?.appleCare, {}) as any;
     const warrantyEnabled = this.pickValue(staged?.warrantyEnabled, staged?.garantiaActiva, item?.warrantyEnabled, item?.garantiaActiva, product?.warrantyEnabled, product?.garantiaActiva, specs?.warrantyEnabled, specs?.garantiaActiva, (parsed as any)?.warrantyEnabled, (parsed as any)?.garantiaActiva);
-    const warrantyDate = this.pickValue(staged?.warrantyDate, staged?.garantiaFecha, staged?.garantia, item?.warrantyDate, item?.garantiaFecha, item?.garantia, product?.warrantyDate, product?.garantiaFecha, product?.garantia, specs?.garantiaFecha, specs?.garantia, (parsed as any)?.warrantyDate, (parsed as any)?.garantiaFecha, (parsed as any)?.garantia);
+    const warrantyType = this.pickValue(staged?.warrantyType, staged?.garantiaTipo, item?.warrantyType, item?.garantiaTipo, product?.warrantyType, product?.garantiaTipo, specs?.warrantyType, specs?.garantiaTipo, warrantyObject?.type, warrantyObject?.tipo, warrantyObject?.plan, (parsed as any)?.warrantyType, (parsed as any)?.garantiaTipo);
+    const warrantyDate = this.pickValue(staged?.warrantyDate, staged?.garantiaFecha, staged?.garantia, item?.warrantyDate, item?.garantiaFecha, item?.garantia, product?.warrantyDate, product?.garantiaFecha, product?.garantia, specs?.garantiaFecha, specs?.garantia, warrantyObject?.date, warrantyObject?.fecha, warrantyObject?.hasta, warrantyObject?.expiresAt, warrantyObject?.expirationDate, (parsed as any)?.warrantyDate, (parsed as any)?.garantiaFecha, (parsed as any)?.garantia);
+    const rawConnectivity = this.pickValue(staged?.conectividad, item?.conectividad, product?.conectividad, specs?.conectividad, detail?.conectividad, detail?.conexion, (parsed as any)?.conectividad);
+    const connectivity = rawConnectivity === undefined ? undefined : (/cel/i.test(String(rawConnectivity)) ? 'WiFi + Celular' : (/wi-?fi/i.test(String(rawConnectivity)) ? 'WiFi' : String(rawConnectivity).trim()));
+    const category = String(this.pickValue(staged?.category, item?.category, product?.category, specs?.tipo, staged?.tipo, item?.tipo, product?.tipo, (parsed as any)?.category, '') || '').trim();
+    const isWatch = /watch/i.test(category);
+    const watchLine = String(this.pickValue(staged?.watchType, item?.watchType, product?.watchType, specs?.watchType, detail?.watchType, detail?.gama, (parsed as any)?.watchType, '') || '').trim();
+    const watchGeneration = String(this.pickValue(staged?.watchSeries, item?.watchSeries, product?.watchSeries, staged?.watchVersion, item?.watchVersion, product?.watchVersion, specs?.watchSeries, specs?.watchVersion, detail?.watchSeries, detail?.watchVersion, detail?.generacion, (parsed as any)?.watchSeries, (parsed as any)?.watchVersion, '') || '').trim();
+    const watchType = /ultra/i.test(watchLine) ? 'Ultra' : (isWatch || /series|se|normal/i.test(watchLine) ? 'Normal' : undefined);
+    const watchNumber = watchGeneration.replace(/^(?:series|ultra|se)\s*/i, '').trim() || undefined;
+    const rawWatchConnection = this.pickValue(staged?.watchConnection, item?.watchConnection, product?.watchConnection, specs?.watchConnection, detail?.watchConnection, detail?.conexion, detail?.conectividad, (parsed as any)?.watchConnection);
+    const watchConnection = rawWatchConnection === undefined || String(rawWatchConnection).trim() === '' ? undefined : (/cel/i.test(String(rawWatchConnection)) ? 'GPS + Cellular' : 'GPS');
+    const rawWatchSize = this.pickValue(staged?.watchSize, item?.watchSize, product?.watchSize, specs?.watchSize, detail?.watchSize, detail?.['tama\u00f1o'], detail?.tamanio, detail?.tamano, (parsed as any)?.watchSize);
+    const watchSize = rawWatchSize === undefined ? undefined : (String(rawWatchSize).match(/\b(\d+(?:\.\d+)?)\b/)?.[1] || String(rawWatchSize).trim());
     parsed = {
       ...parsed,
       ...(color !== undefined ? { color } : {}),
@@ -268,7 +296,25 @@ export class PullSyncService {
         batteryHealth: batteryHealth ?? (parsed as any)?.batteryHealth ?? null,
       } : {}),
       ...(warrantyEnabled !== undefined ? { warrantyEnabled, garantiaActiva: warrantyEnabled } : {}),
+      ...(warrantyType !== undefined ? { warrantyType, garantiaTipo: warrantyType } : {}),
       ...(warrantyDate !== undefined ? { warrantyDate, garantiaFecha: warrantyDate, garantia: warrantyDate } : {}),
+      ...(connectivity !== undefined ? { conectividad: connectivity } : {}),
+      ...(watchType !== undefined ? { watchType } : {}),
+      ...(watchType === 'Normal' && watchNumber !== undefined ? { watchSeries: watchNumber } : {}),
+      ...(watchType === 'Ultra' && watchNumber !== undefined ? { watchVersion: watchNumber } : {}),
+      ...(watchConnection !== undefined ? { watchConnection } : {}),
+      ...(watchSize !== undefined ? { watchSize } : {}),
+      ...(isWatch && includes !== undefined ? { watchIncludes: includes } : {}),
+      specs: {
+        ...((parsed as any).specs || {}),
+        ...specs,
+        ...(category ? { tipo: category } : {}),
+        detalle: {
+          ...(((parsed as any).specs || {}).detalle || {}),
+          ...detail,
+          ...(connectivity !== undefined ? { conectividad: connectivity } : {}),
+        },
+      },
     };
     const meta = this.sourceMeta(item);
     if (!meta.storeName && !meta.storeUrl && !meta.sourceUrl) return this.normalizeNotes(parsed);
@@ -452,6 +498,8 @@ export class PullSyncService {
   private stagedRowFromItem(item: any) {
     const product = item?.product || item?.producto || item;
     const staged = item?.staged || item?.staged_product || item?.stage || null;
+    const sourceSpecs = this.pickValue(staged?.specs, item?.specs, product?.specs, {}) as any;
+    const sourceDetail = this.pickValue(sourceSpecs?.detalle, sourceSpecs?.detail, staged?.detalle, staged?.detail, item?.detalle, item?.detail, product?.detalle, product?.detail, {}) as any;
 
     const { sku, sourceId } = this.itemKeys(item);
     if (!sku) return null;
@@ -498,7 +546,7 @@ export class PullSyncService {
       product?.iphoneModel,
       null,
     ) as any;
-    const includes = this.pickValue(staged?.includes, item?.includes, product?.includes, null) as any;
+    const includes = this.normalizeIncludes(this.pickValue(staged?.includes, staged?.incluye, staged?.accessories, staged?.accesorios, item?.includes, item?.incluye, item?.accessories, item?.accesorios, product?.includes, product?.incluye, product?.accessories, product?.accesorios, sourceSpecs?.includes, sourceSpecs?.incluye, sourceSpecs?.accessories, sourceSpecs?.accesorios, sourceDetail?.includes, sourceDetail?.incluye, sourceDetail?.accessories, sourceDetail?.accesorios, null)) as any;
     const includesExtra = this.pickValue(
       staged?.includes_extra,
       staged?.includesExtra,
@@ -517,20 +565,32 @@ export class PullSyncService {
       product?.keyboardLayout,
       null,
     ) as any;
-    const productCondition = this.pickValue(
+    const rawProductCondition = this.pickValue(
       staged?.product_condition,
       staged?.productCondition,
       item?.product_condition,
       item?.productCondition,
       product?.product_condition,
       product?.productCondition,
+      sourceSpecs?.estado,
+      staged?.estado,
+      item?.estado,
+      product?.estado,
       null,
     ) as any;
+    const productCondition = (() => {
+      const value = String(rawProductCondition || '').trim();
+      if (/^nuevo$/i.test(value)) return 'Nuevo';
+      if (/^usado$/i.test(value)) return 'Usado';
+      if (/open\s*box/i.test(value)) return 'Open Box';
+      if (/arreglado|reparado/i.test(value)) return 'Arreglado';
+      return value || null;
+    })();
     const batteryCycles = this.pickValue(staged?.battery_cycles, staged?.batteryCycles, item?.battery_cycles, item?.batteryCycles, product?.battery_cycles, product?.batteryCycles, staged?.bateria?.ciclos, item?.bateria?.ciclos, product?.bateria?.ciclos, product?.specs?.bateria?.ciclos, null) as any;
     const batteryHealth = this.pickValue(staged?.battery_health, staged?.batteryHealth, item?.battery_health, item?.batteryHealth, product?.battery_health, product?.batteryHealth, staged?.bateria?.salud, item?.bateria?.salud, product?.bateria?.salud, product?.specs?.bateria?.salud, null) as any;
-    const color = this.pickValue(staged?.color, item?.color, product?.color, product?.specs?.color, null) as any;
+    const color = this.pickValue(staged?.color, item?.color, product?.color, sourceSpecs?.color, sourceDetail?.color, sourceDetail?.colorName, null) as any;
 
-    const category = this.pickValue(staged?.category, item?.category, product?.category, null) as any;
+    const category = this.pickValue(staged?.category, item?.category, product?.category, sourceSpecs?.tipo, staged?.tipo, item?.tipo, product?.tipo, null) as any;
     const tags = this.normalizeArray(this.pickValue(staged?.tags, item?.tags, null));
     const images = Array.isArray(this.pickValue(staged?.images, item?.images, product?.images)) ? this.pickValue(staged?.images, item?.images, product?.images) : [];
     const notes = this.mergeNotes(this.pickValue(staged?.notes, item?.notes, null), item);

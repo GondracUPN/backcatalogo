@@ -81,13 +81,31 @@ export class SyncController {
     const finalPrice = p?.finalPrice ?? p?.final_price ?? null;
     const minOfferPrice = p?.minOfferPrice ?? p?.min_offer_price ?? null;
     const iphoneModel = p?.iphoneModel ?? p?.iphone_model ?? null;
-    const includes = p?.includes ?? null;
+    const sourceSpecs = p?.specs || {};
+    const sourceDetail = sourceSpecs?.detalle || sourceSpecs?.detail || {};
+    const rawIncludes = p?.includes ?? p?.incluye ?? p?.accessories ?? p?.accesorios ?? sourceSpecs?.includes ?? sourceSpecs?.incluye ?? sourceSpecs?.accessories ?? sourceSpecs?.accesorios ?? sourceDetail?.includes ?? sourceDetail?.incluye ?? sourceDetail?.accessories ?? sourceDetail?.accesorios ?? null;
+    const includes: any = Array.isArray(rawIncludes)
+      ? rawIncludes.map(String).map((value: string) => value.trim()).filter(Boolean).join(' + ')
+      : rawIncludes && typeof rawIncludes === 'object'
+        ? Object.entries(rawIncludes).filter(([, enabled]) => ![false, 0, '0', 'false', 'no', null, undefined, ''].includes(enabled as any)).map(([key]) => key).join(' + ')
+        : rawIncludes === null ? null : String(rawIncludes).trim();
     const includesExtra = p?.includesExtra ?? p?.includes_extra ?? null;
     const keyboardLayout = p?.keyboardLayout ?? p?.keyboard_layout ?? null;
-    const productCondition = p?.productCondition ?? p?.product_condition ?? null;
+    const rawProductCondition = p?.productCondition ?? p?.product_condition ?? sourceSpecs?.estado ?? null;
+    const productCondition = (() => {
+      const value = String(rawProductCondition || '').trim();
+      if (!value) return null;
+      if (/^nuevo$/i.test(value)) return 'Nuevo';
+      if (/^usado$/i.test(value)) return 'Usado';
+      if (/open\s*box/i.test(value)) return 'Open Box';
+      if (/arreglado|reparado/i.test(value)) return 'Arreglado';
+      return value;
+    })();
+    const warrantyObject = p?.warranty ?? p?.garantiaDetalle ?? p?.coverage ?? p?.appleCare ?? p?.specs?.warranty ?? p?.specs?.garantiaDetalle ?? p?.specs?.coverage ?? p?.specs?.appleCare ?? {};
     const warrantyEnabled = p?.warrantyEnabled ?? p?.garantiaActiva ?? p?.specs?.warrantyEnabled ?? p?.specs?.garantiaActiva ?? null;
-    const warrantyDate = p?.warrantyDate ?? p?.garantiaFecha ?? p?.garantia ?? p?.specs?.warrantyDate ?? p?.specs?.garantiaFecha ?? p?.specs?.garantia ?? null;
-    const color = p?.color ?? null;
+    const warrantyType = p?.warrantyType ?? p?.garantiaTipo ?? p?.specs?.warrantyType ?? p?.specs?.garantiaTipo ?? warrantyObject?.type ?? warrantyObject?.tipo ?? warrantyObject?.plan ?? null;
+    const warrantyDate = p?.warrantyDate ?? p?.garantiaFecha ?? p?.garantia ?? p?.specs?.warrantyDate ?? p?.specs?.garantiaFecha ?? p?.specs?.garantia ?? warrantyObject?.date ?? warrantyObject?.fecha ?? warrantyObject?.hasta ?? warrantyObject?.expiresAt ?? warrantyObject?.expirationDate ?? null;
+    const color = p?.color ?? p?.specs?.color ?? p?.specs?.detalle?.color ?? p?.specs?.detalle?.colorName ?? null;
     const batteryCyclesValue = p?.batteryCycles ?? p?.battery_cycles ?? null;
     const batteryHealthValue = p?.batteryHealth ?? p?.battery_health ?? null;
     const batteryCycles = batteryCyclesValue === null || batteryCyclesValue === ''
@@ -96,10 +114,20 @@ export class SyncController {
     const batteryHealth = batteryHealthValue === null || batteryHealthValue === ''
       ? null
       : Number(batteryHealthValue);
+    const watchLine = String(p?.watchType ?? p?.watch_type ?? sourceSpecs?.watchType ?? sourceDetail?.watchType ?? sourceDetail?.gama ?? '').trim();
+    const watchGeneration = String(p?.watchSeries ?? p?.watch_series ?? p?.watchVersion ?? p?.watch_version ?? sourceSpecs?.watchSeries ?? sourceSpecs?.watchVersion ?? sourceDetail?.watchSeries ?? sourceDetail?.watchVersion ?? sourceDetail?.generacion ?? '').trim();
+    const isWatch = /watch/i.test(String(sourceSpecs?.tipo || p?.category || ''));
+    const watchType = /ultra/i.test(watchLine) ? 'Ultra' : (isWatch || /series|se|normal/i.test(watchLine) ? 'Normal' : null);
+    const watchNumber = watchGeneration.replace(/^(?:series|ultra|se)\s*/i, '').trim() || null;
+    const rawWatchConnection = p?.watchConnection ?? p?.watch_connection ?? sourceSpecs?.watchConnection ?? sourceDetail?.watchConnection ?? sourceDetail?.conexion ?? sourceDetail?.conectividad ?? null;
+    const watchConnection = rawWatchConnection == null || String(rawWatchConnection).trim() === '' ? null : (/cel/i.test(String(rawWatchConnection)) ? 'GPS + Cellular' : 'GPS');
+    const watchSize = String(p?.watchSize ?? p?.watch_size ?? sourceSpecs?.watchSize ?? sourceDetail?.watchSize ?? sourceDetail?.['tama\u00f1o'] ?? sourceDetail?.tamanio ?? sourceDetail?.tamano ?? '').match(/\b(\d+(?:\.\d+)?)\b/)?.[1] ?? null;
+    const rawConnectivity = sourceDetail?.conectividad ?? sourceDetail?.conexion ?? sourceSpecs?.conectividad ?? p?.conectividad ?? null;
+    const connectivity = rawConnectivity == null ? null : (/cel/i.test(String(rawConnectivity)) ? 'WiFi + Celular' : (/wi-?fi/i.test(String(rawConnectivity)) ? 'WiFi' : String(rawConnectivity).trim()));
 
     // Normalizar specs (solo campos necesarios)
     const normSpecs = (() => {
-      const s = p?.specs || {};
+      const s = sourceSpecs;
       const d = s?.detalle || {};
       const sim = d?.esim ?? d?.sim ?? s?.sim ?? null;
       return {
@@ -121,10 +149,19 @@ export class SyncController {
         includesExtra,
         productCondition: productCondition ?? s?.estado ?? null,
         warrantyEnabled,
+        warrantyType,
         warrantyDate,
         garantiaActiva: warrantyEnabled,
+        garantiaTipo: warrantyType,
         garantiaFecha: warrantyDate,
         garantia: warrantyDate,
+        conectividad: connectivity,
+        watchType,
+        watchSeries: watchType === 'Normal' ? watchNumber : null,
+        watchVersion: watchType === 'Ultra' ? watchNumber : null,
+        watchConnection,
+        watchSize,
+        watchIncludes: isWatch ? includes : null,
         detalle: {
           id: d?.id ?? null,
           esim: sim,
@@ -133,10 +170,13 @@ export class SyncController {
           generacion: d?.generacion ?? null,
           numero: d?.numero ?? null,
           modelo: d?.modelo ?? null,
-          tamanio: d?.['tama\u00f1o'] ?? d?.tamanio ?? d?.tamano ?? null,
+          tamanio: watchSize ?? d?.['tama\u00f1o'] ?? d?.tamanio ?? d?.tamano ?? null,
           almacenamiento: d?.almacenamiento ?? null,
           ram: d?.ram ?? null,
+          color: d?.color ?? d?.colorName ?? color,
+          includes: d?.includes ?? d?.incluye ?? includes,
           conexion: d?.conexion ?? null,
+          conectividad: connectivity,
           descripcionOtro: d?.descripcionOtro ?? null,
         },
         valor: { costoTotal: s?.valor?.costoTotal ?? null },
