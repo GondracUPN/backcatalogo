@@ -48,7 +48,7 @@ export class PullSyncService {
   }
 
   private upstreamBase() {
-    const raw = process.env.UPSTREAM_API_BASE || '';
+    const raw = process.env.UPSTREAM_API_BASE || process.env.SERVICES_API_BASE || '';
     return raw.trim().replace(/\/+$/, '');
   }
 
@@ -825,5 +825,20 @@ export class PullSyncService {
 
   async syncStaged(options: SyncOptions = {}) {
     return this.sync('staged', options);
+  }
+
+  async requestUpstreamInventoryRecalculation(): Promise<any> {
+    const base = this.upstreamBase();
+    if (!base) return { ok: false, reason: 'no_upstream' };
+    const path = process.env.UPSTREAM_RECALCULATE_PATH || '/productos/catalog-sync/recalculate';
+    const url = /^https?:\/\//i.test(path) ? path : `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+    const response = await fetch(url, { method: 'POST', headers: this.headers(), body: '{}' }).catch((error: unknown) => {
+      this.logger.warn(`upstream recalculation failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+    if (!response || !response.ok) {
+      return { ok: false, reason: 'upstream_failed', status: response?.status || null };
+    }
+    return response.json().catch(() => ({ ok: true }));
   }
 }

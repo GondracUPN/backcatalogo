@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
 import { SyncLog } from '../../entities/sync-log.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
+import { CatalogPublic } from '../../entities/catalog-public.entity';
 import * as crypto from 'node:crypto';
 
 type IncomingEvent = 'product.listed' | 'product.updated' | 'product.sold';
@@ -14,7 +15,57 @@ export class SyncController {
     @InjectRepository(CatalogProduct) private products: Repository<CatalogProduct>,
     @InjectRepository(SyncLog) private logs: Repository<SyncLog>,
     @InjectRepository(StagedProduct) private staged: Repository<StagedProduct>,
+    @InjectRepository(CatalogPublic) private publicCatalog: Repository<CatalogPublic>,
   ) {}
+
+  private parseNotes(notes?: string | null) {
+    try {
+      return typeof notes === 'string' ? JSON.parse(notes) : (notes || {});
+    } catch {
+      return {};
+    }
+  }
+
+  private async getExistingProtection(
+    sku: string,
+    product?: CatalogProduct | null,
+    staged?: StagedProduct | null,
+  ) {
+    const productIds = Array.from(new Set([product?.id, staged?.source_id].filter(Boolean))) as string[];
+    const publicRecord = productIds.length
+      ? await this.publicCatalog.findOne({ where: productIds.map((product_id) => ({ product_id })) })
+      : null;
+    let sold = false;
+    try {
+      const soldRows = await this.products.manager.query(
+        `SELECT 1
+           FROM sold_records
+          WHERE LOWER(COALESCE(sku, '')) = LOWER($1)
+             OR product_id::text = ANY($2::text[])
+          LIMIT 1`,
+        [sku, productIds],
+      );
+      sold = soldRows.length > 0;
+    } catch {
+      // Instalaciones antiguas pueden no tener todavia la tabla de ventas.
+    }
+    const notes = this.parseNotes(staged?.notes);
+    const isMergedPublication = Boolean(
+      String(notes?.linkedMainSku || '').trim()
+      || (Array.isArray(notes?.linkedSkus) && notes.linkedSkus.length)
+      || String(notes?.linkedSkuGroup?.mainSku || '').trim(),
+    );
+    const status = String(staged?.status || product?.status || '').toLowerCase();
+    const protectedStatus = !['', 'draft', 'listed'].includes(status);
+    return {
+      protected: Boolean(publicRecord) || sold || isMergedPublication || protectedStatus,
+      published: Boolean(publicRecord?.is_published),
+      previouslyPublished: Boolean(publicRecord),
+      sold,
+      merged: isMergedPublication,
+      status,
+    };
+  }
 
   private verifyHmac(raw: string, signature?: string) {
     const secret = process.env.SYNC_SECRET || '';
@@ -27,8 +78,20 @@ export class SyncController {
   async exists(@Query('sku') sku?: string, @Query('id') id?: string) {
     if (!sku && !id) return { exists: false };
     if (sku) {
-      const p = await this.products.findOne({ where: { sku } });
-      return { exists: !!p };
+      const normalizedSku = String(sku).trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS');
+      const p = await this.products.findOne({ where: { sku: normalizedSku } });
+      const staged = await this.staged.findOne({ where: { sku: normalizedSku } });
+      const protection = await this.getExistingProtection(normalizedSku, p, staged);
+      const recordExists = Boolean(p || staged || protection.sold);
+      return {
+        exists: recordExists,
+        status: protection.status || null,
+        published: protection.published,
+        previouslyPublished: protection.previouslyPublished,
+        sold: protection.sold,
+        merged: protection.merged,
+        canRecalculate: recordExists && !protection.protected && protection.status === 'listed',
+      };
     }
     if (id) {
       const sid = String(id);
@@ -76,6 +139,23 @@ export class SyncController {
     const p = body?.product || {};
     const sku = String(p?.sku || '').trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS');
     if (!sku) throw new UnauthorizedException('missing sku');
+    const sid = this.toDeterministicUuid(String(p.id ?? sku));
+    const [existingProduct, existingStaged] = await Promise.all([
+      this.products.findOne({ where: { sku } }),
+      this.staged.findOne({ where: [{ source_id: sid }, { sku }] }),
+    ]);
+    const protection = await this.getExistingProtection(sku, existingProduct, existingStaged);
+    if ((existingProduct || existingStaged) && (protection.protected || protection.status !== 'listed')) {
+      await this.logs.save(this.logs.create({ idem_key: idemKey }));
+      return {
+        ok: true,
+        skipped: 'protected',
+        published: protection.published,
+        previouslyPublished: protection.previouslyPublished,
+        sold: protection.sold,
+        merged: protection.merged,
+      };
+    }
     const saleType = p?.saleType ?? p?.sale_type ?? null;
     const discount = p?.discount ?? null;
     const finalPrice = p?.finalPrice ?? p?.final_price ?? null;
@@ -208,7 +288,6 @@ export class SyncController {
     );
 
     // Upsert staged mirror by source_id (uuid derivado del id de origen)
-    const sid = this.toDeterministicUuid(String(p.id ?? sku));
     await this.staged.upsert(
       {
         source_id: sid,

@@ -6,6 +6,7 @@ async function main() {
   const productUpserts: any[] = [];
   const stagedUpserts: any[] = [];
   const products = {
+    findOne: async () => null,
     upsert: async (value: any) => { productUpserts.push(value); },
   };
   const logs = {
@@ -14,9 +15,11 @@ async function main() {
     save: async (value: any) => value,
   };
   const staged = {
+    findOne: async () => null,
     upsert: async (value: any) => { stagedUpserts.push(value); },
   };
-  const controller = new SyncController(products as any, logs as any, staged as any);
+  const publicCatalog = { findOne: async () => null };
+  const controller = new SyncController(products as any, logs as any, staged as any, publicCatalog as any);
   const originalSecret = process.env.SYNC_SECRET;
   const originalFetch = globalThis.fetch;
   process.env.SYNC_SECRET = 'sync-test-secret';
@@ -68,6 +71,76 @@ async function main() {
   assert.equal(notes.precioLista, '2500');
   assert.equal(notes.minOfferPrice, 2300);
   assert.deepEqual(notes.bateria, { ciclos: 5, salud: 100 });
+
+  const protectedUpserts: any[] = [];
+  const protectedController = new SyncController(
+    {
+      findOne: async () => ({ id: 'published-product', status: 'listed' }),
+      upsert: async (value: any) => { protectedUpserts.push(value); },
+    } as any,
+    {
+      findOne: async () => null,
+      create: (value: any) => value,
+      save: async (value: any) => value,
+    } as any,
+    {
+      findOne: async () => ({ status: 'published' }),
+      upsert: async (value: any) => { protectedUpserts.push(value); },
+    } as any,
+    { findOne: async () => ({ is_published: true }) } as any,
+  );
+  const protectedBody = { ...body, product: { ...body.product, id: 43, sku: 'svc-43' } };
+  process.env.SYNC_SECRET = 'sync-test-secret';
+  const protectedSignature = crypto
+    .createHmac('sha256', process.env.SYNC_SECRET)
+    .update(JSON.stringify(protectedBody))
+    .digest('hex');
+  try {
+    const protectedResult = await protectedController.syncProduct(protectedSignature, 'sync-protected-43', protectedBody);
+    assert.equal(protectedResult.skipped, 'protected');
+    assert.equal(protectedUpserts.length, 0);
+
+    const soldController = new SyncController(
+      {
+        findOne: async () => ({ id: 'sold-product', status: 'listed' }),
+        manager: { query: async () => [{ sold: true }] },
+      } as any,
+      {
+        findOne: async () => null,
+        create: (value: any) => value,
+        save: async (value: any) => value,
+      } as any,
+      { findOne: async () => ({ status: 'listed', notes: null }) } as any,
+      { findOne: async () => null } as any,
+    );
+    const soldResult = await soldController.syncProduct(protectedSignature, 'sync-sold-43', protectedBody);
+    assert.equal(soldResult.skipped, 'protected');
+    assert.equal(soldResult.sold, true);
+
+    const historicalPublicationController = new SyncController(
+      {
+        findOne: async () => ({ id: 'old-publication', status: 'listed' }),
+        manager: { query: async () => [] },
+      } as any,
+      {
+        findOne: async () => null,
+        create: (value: any) => value,
+        save: async (value: any) => value,
+      } as any,
+      { findOne: async () => ({ status: 'listed', notes: null }) } as any,
+      { findOne: async () => ({ is_published: false }) } as any,
+    );
+    const historicalResult = await historicalPublicationController.syncProduct(
+      protectedSignature,
+      'sync-historical-publication-43',
+      protectedBody,
+    );
+    assert.equal(historicalResult.skipped, 'protected');
+    assert.equal(historicalResult.previouslyPublished, true);
+  } finally {
+    if (originalSecret === undefined) delete process.env.SYNC_SECRET;
+    else process.env.SYNC_SECRET = originalSecret;
+  }
   console.log('sync inventory fields test passed');
 }
 

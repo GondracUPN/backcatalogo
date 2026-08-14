@@ -1093,6 +1093,14 @@ export class AdminController {
     return { ok: true, config: rows?.[0]?.value || config };
   }
 
+  @Post('recalculate-inventory-metadata')
+  async recalculateInventoryMetadata(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    const result = await this.pullSync.requestUpstreamInventoryRecalculation();
+    if (!result?.ok) throw new BadRequestException('No se pudo recalcular el inventario desde Servicios');
+    return result;
+  }
+
   @Post('staged/bulk')
   async bulk(@Headers('authorization') authHeader: string, @Body() body: any) {
     this.requireAdmin(authHeader);
