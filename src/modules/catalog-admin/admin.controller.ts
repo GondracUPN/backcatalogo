@@ -19,6 +19,39 @@ const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
 const CATEGORIES = new Set(['macbook', 'ipad', 'iphone', 'watch', 'accesorios', 'otros']);
 const PRODUCT_VERSION_CONFIG_KEY = 'product_versions';
 
+function validIncludedAccessories(value: unknown, category: unknown) {
+  const raw = String(value || '').trim();
+  if (!raw) return true;
+  if (/^(?:ninguno|otros)$/i.test(raw)) return true;
+  const tokens = raw.split('+').map((token) => token.trim()).filter(Boolean);
+  if (!tokens.length) return false;
+  const isWatch = /watch/i.test(String(category || ''));
+  let hasCable = false;
+  let hasStrap = false;
+  let hasCube = false;
+  for (const token of tokens) {
+    if (/^caja(?:\s+sola)?$/i.test(token)) continue;
+    if (/^(?:solo\s+)?cable(?:\s+(?:solo|original|fake|gen[eé]rico))?$/i.test(token)) {
+      if (hasCable) return false;
+      hasCable = true;
+      continue;
+    }
+    if (/^correa(?:\s+(?:original|fake|gen[eé]rica))?$/i.test(token)) {
+      if (!isWatch || hasStrap) return false;
+      hasStrap = true;
+      continue;
+    }
+    if (/^cubo(?:\s+(?:solo|original|fake|gen[eé]rico))?$/i.test(token)) {
+      if (isWatch || hasCube) return false;
+      hasCube = true;
+      continue;
+    }
+    if (/^otros$/i.test(token)) continue;
+    return false;
+  }
+  return true;
+}
+
 function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
   const map: Record<string, string[]> = {
     '11': ['Normal', 'Pro', 'Pro Max'],
@@ -465,7 +498,9 @@ export class AdminController {
     if (saleType && !SALE_TYPES.has(saleType)) throw new BadRequestException('invalid sale_type');
     if (saleType) patch.sale_type = saleType;
     if (iphoneModel && !IPHONE_MODELS.has(String(iphoneModel))) throw new BadRequestException('invalid iphone_model');
-    if (includes && !INCLUDES_VALUES.has(String(includes))) throw new BadRequestException('invalid includes');
+    if (includes && !INCLUDES_VALUES.has(String(includes)) && !validIncludedAccessories(includes, category)) {
+      throw new BadRequestException(`invalid includes: ${String(includes)}`);
+    }
     if (patch.keyboard_layout && !KEYBOARD_LAYOUTS.has(String(patch.keyboard_layout))) {
       throw new BadRequestException('invalid keyboard_layout');
     }
@@ -482,7 +517,7 @@ export class AdminController {
       }
       if (!color) throw new BadRequestException('color required');
       if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && !includes) throw new BadRequestException('includes required');
-      if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && includes && !IPHONE_INCLUDES_VALUES.has(String(includes))) {
+      if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && includes && !IPHONE_INCLUDES_VALUES.has(String(includes)) && !validIncludedAccessories(includes, category)) {
         throw new BadRequestException('includes invalid for iphone');
       }
       if (!isFinite(Number(iphoneNumber)) || Number(iphoneNumber) <= 0) {
@@ -496,7 +531,7 @@ export class AdminController {
         throw new BadRequestException('iphone_model invalid for iphone_number');
       }
     }
-    if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && includes === 'Otros' && !includesExtra) {
+    if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && /(?:^|\+)\s*Otros\s*(?:$|\+)/i.test(String(includes || '')) && !includesExtra) {
       throw new BadRequestException('includes_extra required');
     }
     if (productCondition && productCondition !== 'Nuevo') {
