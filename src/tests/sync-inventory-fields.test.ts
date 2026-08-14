@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import * as crypto from 'node:crypto';
 import { SyncController } from '../modules/sync/sync.controller';
 
 async function main() {
@@ -20,9 +19,7 @@ async function main() {
   };
   const publicCatalog = { findOne: async () => null };
   const controller = new SyncController(products as any, logs as any, staged as any, publicCatalog as any);
-  const originalSecret = process.env.SYNC_SECRET;
   const originalFetch = globalThis.fetch;
-  process.env.SYNC_SECRET = 'sync-test-secret';
   (globalThis as any).fetch = async () => ({ ok: true });
 
   const body = {
@@ -43,16 +40,9 @@ async function main() {
       specs: { tipo: 'iphone', estado: 'usado', detalle: { almacenamiento: '256 GB' } },
     },
   };
-  const signature = crypto
-    .createHmac('sha256', process.env.SYNC_SECRET || '')
-    .update(JSON.stringify(body))
-    .digest('hex');
-
   try {
-    await controller.syncProduct(signature, 'sync-inventory-fields-42', body);
+    await controller.syncProduct('sync-inventory-fields-42', body);
   } finally {
-    if (originalSecret === undefined) delete process.env.SYNC_SECRET;
-    else process.env.SYNC_SECRET = originalSecret;
     (globalThis as any).fetch = originalFetch;
   }
 
@@ -90,13 +80,8 @@ async function main() {
     { findOne: async () => ({ is_published: true }) } as any,
   );
   const protectedBody = { ...body, product: { ...body.product, id: 43, sku: 'svc-43' } };
-  process.env.SYNC_SECRET = 'sync-test-secret';
-  const protectedSignature = crypto
-    .createHmac('sha256', process.env.SYNC_SECRET)
-    .update(JSON.stringify(protectedBody))
-    .digest('hex');
-  try {
-    const protectedResult = await protectedController.syncProduct(protectedSignature, 'sync-protected-43', protectedBody);
+  {
+    const protectedResult = await protectedController.syncProduct('sync-protected-43', protectedBody);
     assert.equal(protectedResult.skipped, 'protected');
     assert.equal(protectedUpserts.length, 0);
 
@@ -113,7 +98,7 @@ async function main() {
       { findOne: async () => ({ status: 'listed', notes: null }) } as any,
       { findOne: async () => null } as any,
     );
-    const soldResult = await soldController.syncProduct(protectedSignature, 'sync-sold-43', protectedBody);
+    const soldResult = await soldController.syncProduct('sync-sold-43', protectedBody);
     assert.equal(soldResult.skipped, 'protected');
     assert.equal(soldResult.sold, true);
 
@@ -131,15 +116,11 @@ async function main() {
       { findOne: async () => ({ is_published: false }) } as any,
     );
     const historicalResult = await historicalPublicationController.syncProduct(
-      protectedSignature,
       'sync-historical-publication-43',
       protectedBody,
     );
     assert.equal(historicalResult.skipped, 'protected');
     assert.equal(historicalResult.previouslyPublished, true);
-  } finally {
-    if (originalSecret === undefined) delete process.env.SYNC_SECRET;
-    else process.env.SYNC_SECRET = originalSecret;
   }
   console.log('sync inventory fields test passed');
 }

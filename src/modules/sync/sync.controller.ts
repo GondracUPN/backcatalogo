@@ -67,12 +67,6 @@ export class SyncController {
     };
   }
 
-  private verifyHmac(raw: string, signature?: string) {
-    const secret = process.env.SYNC_SECRET || '';
-    const h = crypto.createHmac('sha256', secret).update(raw).digest('hex');
-    return h === (signature || '').toLowerCase();
-  }
-
   @Get('exists')
   @HttpCode(200)
   async exists(@Query('sku') sku?: string, @Query('id') id?: string) {
@@ -124,12 +118,9 @@ export class SyncController {
   @Post('product')
   @HttpCode(200)
   async syncProduct(
-    @Headers('x-signature') signature: string,
     @Headers('x-idempotency-key') idemKey: string,
     @Body() body: any,
   ) {
-    const raw = JSON.stringify(body || {});
-    if (!this.verifyHmac(raw, signature)) throw new UnauthorizedException('invalid signature');
     if (!idemKey) throw new UnauthorizedException('missing idempotency key');
 
     const exists = await this.logs.findOne({ where: { idem_key: idemKey } });
@@ -323,7 +314,7 @@ export class SyncController {
     try {
       await fetch(`${nextBase}/api/admin/revalidate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-sync-secret': process.env.SYNC_SECRET || '' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: ['catalog-products', 'catalog-staged'] }),
       });
     } catch {}
