@@ -1096,9 +1096,125 @@ export class AdminController {
   @Post('recalculate-inventory-metadata')
   async recalculateInventoryMetadata(@Headers('authorization') authHeader: string) {
     this.requireAdmin(authHeader);
-    const result = await this.pullSync.requestUpstreamInventoryRecalculation();
-    if (!result?.ok) throw new BadRequestException('No se pudo recalcular el inventario desde Servicios');
-    return result;
+    await this.ensureSoldRecordsTable();
+
+    const stagedRows = await this.stagedRepo.find({ where: { status: 'listed' as any } });
+    const skus = stagedRows.map((row) => row.sku).filter(Boolean);
+    const [products, publicRows, soldRows] = await Promise.all([
+      skus.length ? this.productRepo.findBy({ sku: In(skus) }) : [],
+      this.publicRepo.find(),
+      this.productRepo.manager.query(
+        `SELECT DISTINCT LOWER(COALESCE(sku, '')) AS sku FROM sold_records WHERE COALESCE(sku, '') <> ''`,
+      ),
+    ]);
+    const productBySku = new Map(products.map((product) => [String(product.sku).toLowerCase(), product] as const));
+    const publicProductIds = new Set(publicRows.map((row) => row.product_id));
+    const soldSkus = new Set(soldRows.map((row: any) => String(row?.sku || '').trim().toLowerCase()).filter(Boolean));
+
+    let enviados = 0;
+    let omitidosProtegidos = 0;
+    const errores: Array<{ id: string; error: string }> = [];
+    for (const staged of stagedRows) {
+      try {
+        const skuKey = String(staged.sku || '').trim().toLowerCase();
+        const product = productBySku.get(skuKey) || null;
+        const notes = parseNotes(staged.notes);
+        const merged = Boolean(
+          String(notes?.linkedMainSku || '').trim()
+          || (Array.isArray(notes?.linkedSkus) && notes.linkedSkus.length)
+          || String(notes?.linkedSkuGroup?.mainSku || '').trim(),
+        );
+        const protectedRecord = Boolean(
+          merged
+          || soldSkus.has(skuKey)
+          || (product && publicProductIds.has(product.id))
+          || publicProductIds.has(staged.source_id)
+          || (product && String(product.status || '').toLowerCase() !== 'listed'),
+        );
+        if (protectedRecord) {
+          omitidosProtegidos += 1;
+          continue;
+        }
+
+        const specs = notes?.specs || notes || {};
+        const detail = specs?.detalle || specs?.detail || {};
+        const firstValue = (...values: any[]) => values.find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+        const condition = String(firstValue(staged.product_condition, notes?.productCondition, notes?.estado, specs?.estado) || '').trim();
+        const category = String(firstValue(staged.category, notes?.category, specs?.tipo) || '').trim().toLowerCase();
+        const isNew = /^nuevo$/i.test(condition);
+        const warrantyObject = firstValue(notes?.warranty, notes?.garantiaDetalle, specs?.warranty, specs?.garantiaDetalle) || {};
+        const warrantyEnabled = isNew || Boolean(firstValue(notes?.warrantyEnabled, notes?.garantiaActiva, specs?.warrantyEnabled, specs?.garantiaActiva, warrantyObject?.enabled, warrantyObject?.activa));
+        const warrantyType = warrantyEnabled
+          ? (isNew ? 'Garantía limitada de Apple' : firstValue(notes?.warrantyType, notes?.garantiaTipo, specs?.warrantyType, specs?.garantiaTipo, warrantyObject?.type, warrantyObject?.tipo, 'Garantía limitada de Apple'))
+          : null;
+        const warrantyDate = warrantyEnabled
+          ? (isNew ? '1 año de garantía' : firstValue(notes?.warrantyDate, notes?.garantiaFecha, specs?.warrantyDate, specs?.garantiaFecha, warrantyObject?.date, warrantyObject?.fecha, warrantyObject?.hasta, typeof notes?.garantia === 'string' ? notes.garantia : null))
+          : null;
+
+        const currentIncludes = String(firstValue(staged.includes, notes?.includes, specs?.includes, detail?.includes, detail?.incluye) || '').trim();
+        const includes = (() => {
+          if (!isNew) return currentIncludes || null;
+          if (/watch/i.test(category)) {
+            const cable = /cable\s*(?:fake|gen[eé]rico)/i.test(currentIncludes) ? 'Cable fake' : 'Cable';
+            const strap = /correa\s*(?:fake|gen[eé]rica)/i.test(currentIncludes) ? 'Correa fake' : 'Correa';
+            return `Caja + ${cable} + ${strap}`;
+          }
+          if (/macmini/i.test(category)) return 'Caja + Cable';
+          if (/macbook|ipad|iphone/i.test(category)) return 'Caja + Cubo + Cable';
+          return currentIncludes || 'Caja sola';
+        })();
+
+        const numericPrices = [staged.price, staged.min_offer_price, product?.price, product?.min_offer_price, notes?.precioLista, notes?.minOfferPrice]
+          .map(Number)
+          .filter((value) => Number.isFinite(value) && value > 0);
+        const highestPrice = numericPrices.length ? Math.max(...numericPrices) : 0;
+        const price = highestPrice > 0
+          ? (Math.round(highestPrice * 100) % 100 === 99 ? highestPrice : Number((Math.ceil(highestPrice) - 0.01).toFixed(2)))
+          : 0;
+
+        const updatedNotes = {
+          ...notes,
+          precioLista: price,
+          minOfferPrice: null,
+          saleType: 'VENTA_SIMPLE',
+          includes,
+          warrantyEnabled,
+          warrantyType,
+          warrantyDate,
+          garantiaActiva: warrantyEnabled,
+          garantiaTipo: warrantyType,
+          garantiaFecha: warrantyDate,
+          garantia: warrantyDate,
+        };
+        staged.price = String(price);
+        staged.sale_type = 'VENTA_SIMPLE';
+        staged.min_offer_price = null;
+        staged.includes = includes;
+        staged.notes = stringifyNotes(updatedNotes);
+        await this.stagedRepo.save(staged);
+
+        if (product) {
+          product.price = String(price);
+          product.sale_type = asSaleType('VENTA_SIMPLE');
+          product.min_offer_price = null;
+          product.includes = asIncludesKind(includes);
+          await this.productRepo.save(product);
+        }
+        enviados += 1;
+      } catch (error: any) {
+        errores.push({ id: staged.id, error: String(error?.message || error) });
+      }
+    }
+
+    return {
+      ok: true,
+      total: stagedRows.length,
+      enviados,
+      marcados: enviados + omitidosProtegidos,
+      omitidosProtegidos,
+      errores,
+      source: 'catalog_database',
+    };
   }
 
   @Post('staged/bulk')
