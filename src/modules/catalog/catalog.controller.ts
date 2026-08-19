@@ -79,6 +79,7 @@ export class CatalogController {
     if (!product) return null;
     return {
       id: product.id,
+      sku: product.sku,
       title: product.title,
       price: product.price,
       iphone_model: product.iphone_model,
@@ -103,6 +104,7 @@ export class CatalogController {
   private publicStaged(staged: StagedProduct | null) {
     if (!staged) return null;
     return {
+      sku: staged.sku,
       title: staged.title,
       price: staged.price,
       iphone_model: staged.iphone_model,
