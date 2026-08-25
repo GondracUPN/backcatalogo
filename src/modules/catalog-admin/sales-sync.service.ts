@@ -64,7 +64,9 @@ export class SalesSyncService implements OnModuleInit {
       sku: String(sale.sku || '').trim(),
       title: String(sale.product_title || '').trim() || null,
       amount: Number(sale.sale_price || 0),
-      exchangeRate: Number(sale.exchange_rate || 0),
+      // Las ventas anteriores a la sincronizacion no guardaban tipo de cambio.
+      // El receptor antiguo lo exige aun para anulaciones, aunque no lo usa.
+      exchangeRate: Number(sale.exchange_rate || (eventType === 'sale.cancelled' ? 1 : 0)),
       soldAt: sale.sold_at ? new Date(sale.sold_at).toISOString() : new Date().toISOString(),
     };
     const rows = await this.dataSource.query(
