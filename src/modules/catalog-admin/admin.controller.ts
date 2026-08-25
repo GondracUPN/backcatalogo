@@ -1661,11 +1661,38 @@ export class AdminController {
       );
     });
     const requestedStagedId = String(body?.stagedId || '').trim();
-    const requestedLinked = requestedStagedId
+    let requestedLinked = requestedStagedId
       ? availableLinked.find((row) => String(row.id) === requestedStagedId)
       : null;
     if (requestedStagedId && !requestedLinked) {
-      throw new BadRequestException('requested unit is not available in this group');
+      const candidate = await this.stagedRepo.findOne({ where: { id: requestedStagedId } });
+      const candidateSku = String(candidate?.sku || '').trim();
+      const candidateNotes = parseNotes(candidate?.notes);
+      const normalizedCandidateTitle = String(candidate?.title || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const normalizedProductTitle = String(product.title || '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const belongsToGroup = Boolean(candidate && candidateSku) && (
+        String(candidateNotes?.linkedMainSku || '').trim().toLowerCase() === String(product.sku || '').trim().toLowerCase() ||
+        linkedSkusFromMain.some((sku: string) => sku.toLowerCase() === candidateSku.toLowerCase()) ||
+        Boolean(normalizedCandidateTitle && normalizedCandidateTitle === normalizedProductTitle)
+      );
+      if (!candidate || !belongsToGroup) {
+        throw new BadRequestException('La unidad seleccionada ya no pertenece a este grupo');
+      }
+      await this.ensureSoldRecordsTable();
+      const candidateSales = await this.productRepo.manager.query(
+        `SELECT id FROM sold_records WHERE LOWER(COALESCE(sku, '')) = LOWER($1) LIMIT 1`,
+        [candidateSku],
+      );
+      if (candidateSales.length) {
+        throw new BadRequestException('La unidad seleccionada ya tiene una venta activa');
+      }
+      candidate.status = 'published' as any;
+      candidate.stock = Math.max(1, Number(candidate.stock || 0));
+      await this.stagedRepo.update(
+        { id: candidate.id },
+        { status: 'published' as any, stock: candidate.stock },
+      );
+      requestedLinked = candidate;
     }
     const soldLinked = requestedLinked || availableLinked[0] || null;
     const soldUnitSku = soldLinked?.sku || product.sku || '';
