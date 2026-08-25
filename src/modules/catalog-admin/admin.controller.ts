@@ -9,6 +9,7 @@ import { CatalogView } from '../../entities/catalog-view.entity';
 import { AuthService } from '../auth/auth.service';
 import { PullSyncService } from '../sync/pull.service';
 import { validateProductBeforePublish } from '../../utils/product-validation';
+import { SalesSyncService } from './sales-sync.service';
 
 const SALE_TYPES = new Set(['PREVENTA', 'VENTA_SIMPLE', 'PROMOCION', 'OFERTA']);
 const IPHONE_MODELS = new Set(['Normal', 'Plus', 'Pro', 'Pro Max', 'Mini', 'E']);
@@ -205,6 +206,7 @@ export class AdminController {
     @InjectRepository(CatalogProduct) private productRepo: Repository<CatalogProduct>,
     @InjectRepository(CatalogView) private viewRepo: Repository<CatalogView>,
     private pullSync: PullSyncService,
+    private salesSync: SalesSyncService = null as any,
   ) {}
 
   private requireAdmin(authHeader?: string) {
@@ -246,6 +248,7 @@ export class AdminController {
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS customer_kind text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS exchange_rate numeric(10,4) NULL`);
       })().catch((error) => {
         this.soldRecordsReady = null;
         throw error;
@@ -600,6 +603,8 @@ export class AdminController {
     const fallbackPrice = Number(staged.price || 0);
     const price = Number.isFinite(parsedSalePrice) ? parsedSalePrice : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
     if (price < 0) throw new BadRequestException('invalid sale price');
+    const exchangeRate = Number(body?.exchangeRate);
+    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) throw new BadRequestException('valid exchange rate required');
 
     const customerName = String(body?.name || body?.customerName || '').trim();
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '');
@@ -613,17 +618,19 @@ export class AdminController {
 
     await this.ensureSoldRecordsTable();
     await this.ensurePossibleClientsTable();
+    let createdSale: any = null;
     await this.productRepo.manager.transaction(async (mgr) => {
       await mgr.update(
         StagedProduct,
         { id },
         { stock: nextStock, status: nextStock <= 0 ? ('sold' as any) : staged.status },
       );
-      await mgr.query(
-        `INSERT INTO sold_records (product_id, sku, product_title, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [staged.source_id, staged.sku || '', staged.title || staged.sku || 'Producto', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+      const saleRows = await mgr.query(
+        `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [staged.source_id, staged.sku || '', staged.title || staged.sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
       );
+      createdSale = saleRows[0];
       await mgr.query(
         `INSERT INTO possible_clients (
           source_request_id, cart_id, request_type, product_id, product_title, product_color, product_price,
@@ -645,7 +652,10 @@ export class AdminController {
         ],
       );
     });
-    return { ok: true, remainingStock: nextStock };
+    const sync = createdSale
+      ? await this.salesSync.enqueueAndDispatch('sale.created', createdSale)
+      : { ok: false, status: 'failed' };
+    return { ok: true, remainingStock: nextStock, sync };
   }
 
   @Post('staged/:id/publish')
@@ -1699,6 +1709,8 @@ export class AdminController {
     const price = Number.isFinite(parsedSalePrice)
       ? parsedSalePrice
       : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
+    const exchangeRate = Number(body?.exchangeRate);
+    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) throw new BadRequestException('valid exchange rate required');
     const customerName = String(body?.name || body?.customerName || '').trim() || '-';
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '') || '-';
     const customerKindRaw = String(body?.customerKind || '').trim();
@@ -1709,11 +1721,12 @@ export class AdminController {
       ? (String(body?.saleLocation || '').trim() || null)
       : null;
     const mgr = this.productRepo.manager;
-    await mgr.query(
-      `INSERT INTO sold_records (product_id, sku, product_title, sale_price, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [productId, sku, product.title || sku || 'Producto', price, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+    const saleRows = await mgr.query(
+      `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [productId, sku, product.title || sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
     );
+    const createdSale = saleRows[0];
     await this.ensurePossibleClientsTable();
     await mgr.query(
       `
@@ -1751,7 +1764,8 @@ export class AdminController {
         soldAt,
       ],
     );
-    return { ok: true };
+    const sync = await this.salesSync.enqueueAndDispatch('sale.created', createdSale);
+    return { ok: true, sync };
   }
 
   @Post('public/:productId/unsell')
@@ -1772,10 +1786,39 @@ export class AdminController {
     const record = records?.[0];
     if (!record) throw new BadRequestException('sale record not found');
 
-    const product = await this.productRepo.findOne({ where: { id: productId } });
-    if (!product) throw new BadRequestException('product not found');
-
     const soldSku = String(record.sku || '').trim();
+    const product = await this.productRepo.findOne({ where: { id: productId } });
+    const inventoryStaged = !product
+      ? (
+          await this.stagedRepo.findOne({ where: { source_id: productId } }) ||
+          (soldSku
+            ? await this.stagedRepo
+                .createQueryBuilder('staged')
+                .where('LOWER(staged.sku) = :sku', { sku: soldSku.toLowerCase() })
+                .getOne()
+            : null)
+        )
+      : null;
+    if (!product && !inventoryStaged) throw new BadRequestException('sale source not found');
+    const cancellationEventId = await this.salesSync.enqueue('sale.cancelled', record);
+    const sync = await this.salesSync.dispatch(cancellationEventId);
+    if (!sync.ok) {
+      throw new BadRequestException(`No se pudo enviar la anulacion a Servicios: ${sync.error || sync.status}`);
+    }
+
+    if (!product && inventoryStaged) {
+      await this.stagedRepo.update(
+        { id: inventoryStaged.id },
+        {
+          stock: Math.max(1, Number(inventoryStaged.stock || 0) + 1),
+          status: 'draft' as any,
+        },
+      );
+      await mgr.query(`DELETE FROM sold_records WHERE id = $1`, [record.id]);
+      return { ok: true, source: 'inventory', sync: { eventId: cancellationEventId, ...sync } };
+    }
+    if (!product) throw new BadRequestException('published product not found');
+
     const mainSku = String(product.sku || '').trim();
     const soldIsMain = soldSku.toLowerCase() === mainSku.toLowerCase();
     const nextStock = Math.max(1, Number(product.stock || 0) + 1);
@@ -1833,7 +1876,7 @@ export class AdminController {
     }
 
     await mgr.query(`DELETE FROM sold_records WHERE id = $1`, [record.id]);
-    return { ok: true };
+    return { ok: true, sync: { eventId: cancellationEventId, ...sync } };
   }
 
   @Get('sales')
@@ -1841,9 +1884,14 @@ export class AdminController {
     this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
+    await this.salesSync.ensureTable();
     await this.ensurePossibleClientsTable();
     const rows = await mgr.query(`
       SELECT sr.*,
+        sync.status AS sync_status,
+        sync.remote_status AS sync_remote_status,
+        sync.last_error AS sync_error,
+        sync.id AS sync_event_id,
         COALESCE(
           NULLIF(sr.product_title, ''),
           p.title,
@@ -1858,9 +1906,25 @@ export class AdminController {
         ) AS title
       FROM sold_records sr
       LEFT JOIN products p ON p.id = sr.product_id
+      LEFT JOIN LATERAL (
+        SELECT se.id, se.status, se.remote_status, se.last_error
+        FROM sale_sync_events se
+        WHERE se.sale_id = sr.id AND se.event_type = 'sale.created'
+        ORDER BY se.created_at DESC
+        LIMIT 1
+      ) sync ON true
       ORDER BY sr.sold_at DESC, sr.created_at DESC
     `);
     return { items: rows };
+  }
+
+  @Post('sales-sync/:eventId/retry')
+  async retrySaleSync(
+    @Headers('authorization') authHeader: string,
+    @Param('eventId') eventId: string,
+  ) {
+    this.requireAdmin(authHeader);
+    return this.salesSync.dispatch(eventId);
   }
 
   @Put('sales/:saleId')

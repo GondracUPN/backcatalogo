@@ -7,9 +7,11 @@ import { CatalogView } from '../../entities/catalog-view.entity';
 import { AdminController } from './admin.controller';
 import { AuthModule } from '../auth/auth.module';
 import { SyncModule } from '../sync/sync.module';
+import { SalesSyncService } from './sales-sync.service';
 
 @Module({
   imports: [AuthModule, TypeOrmModule.forFeature([StagedProduct, CatalogPublic, CatalogProduct, CatalogView]), SyncModule],
   controllers: [AdminController],
+  providers: [SalesSyncService],
 })
 export class AdminModule {}

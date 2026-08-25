@@ -179,6 +179,13 @@ export class CatalogController {
     const img = (Array.isArray(pub.images) && pub.images[0]) || (Array.isArray(staged?.images) && staged?.images[0]) || '/placeholder.svg';
     const { condition, saleType, price, compareAt, discount, discountMode, promoLabel } = this.priceMeta(product, staged);
     const notes = this.parseNotes(staged);
+    const detail = notes?.specs?.detalle || notes?.detalle || {};
+    const detailImages = Array.from(new Set([
+      ...(Array.isArray(notes?.detailImages) ? notes.detailImages : []),
+      ...(Array.isArray(notes?.detailPhotos) ? notes.detailPhotos : []),
+      ...(Array.isArray(detail?.detailImages) ? detail.detailImages : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+    const conditionDescription = String(detail?.detalles || detail?.productDetails || notes?.productDetails || notes?.detalles || '').trim();
     const stock = Number(product?.stock ?? staged?.stock ?? 1);
     const sold = product?.status === 'sold';
     const outOfStock = !sold && Number.isFinite(stock) && stock <= 0;
@@ -217,6 +224,12 @@ export class CatalogController {
       variantLabel,
       color: product?.color || staged?.color || notes?.color || null,
       batteryHealth,
+      batteryCycles: product?.battery_cycles ?? staged?.battery_cycles ?? notes?.batteryCycles ?? notes?.bateria?.ciclos ?? null,
+      processor: detail?.procesador || null,
+      ram: detail?.ram || null,
+      storage: detail?.almacenamiento || detail?.ssd || product?.storage_gb || staged?.storage_gb || notes?.storageGb || notes?.storage || null,
+      detailCount: detailImages.length,
+      hasConditionDetails: Boolean(conditionDescription || detailImages.length),
       includes: includesDisplay || null,
     };
   }
