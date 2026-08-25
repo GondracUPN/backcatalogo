@@ -590,8 +590,20 @@ export class AdminController {
     this.requireStaff(authHeader);
     const staged = await this.stagedRepo.findOne({ where: { id } });
     if (!staged) throw new BadRequestException('staged product not found');
-    if (['published', 'hidden', 'sold'].includes(String(staged.status || '').toLowerCase()) || Number(staged.stock || 0) <= 0) {
-      throw new BadRequestException('staged product out of stock');
+    const stagedStatus = String(staged.status || '').toLowerCase();
+    if (stagedStatus === 'published' || stagedStatus === 'hidden') {
+      throw new BadRequestException('El producto no se puede vender desde inventario en su estado actual');
+    }
+    if (stagedStatus === 'sold' || Number(staged.stock || 0) <= 0) {
+      await this.ensureSoldRecordsTable();
+      const activeSales = await this.productRepo.manager.query(
+        `SELECT id FROM sold_records WHERE LOWER(COALESCE(sku, '')) = LOWER($1) LIMIT 1`,
+        [staged.sku || ''],
+      );
+      if (activeSales.length) throw new BadRequestException('Este producto ya tiene una venta activa');
+      staged.status = 'draft';
+      staged.stock = 1;
+      await this.stagedRepo.update({ id: staged.id }, { status: 'draft' as any, stock: 1 });
     }
 
     const soldAt = saleDateValue(body?.saleDate);
@@ -1614,8 +1626,21 @@ export class AdminController {
     const product = await this.productRepo.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
     // Marcar el producto como vendido (se acepta fecha en body pero no se persiste aún)
-    const currentStock = Math.max(0, Number(product.stock || 0));
-    if (product.status === 'sold' || currentStock <= 0) throw new BadRequestException('product out of stock');
+    let currentStock = Math.max(0, Number(product.stock || 0));
+    if (product.status === 'sold' || currentStock <= 0) {
+      await this.ensureSoldRecordsTable();
+      const activeSales = await this.productRepo.manager.query(
+        `SELECT id FROM sold_records
+         WHERE product_id = $1 OR LOWER(COALESCE(sku, '')) = LOWER($2)
+         LIMIT 1`,
+        [productId, product.sku || ''],
+      );
+      if (activeSales.length) throw new BadRequestException('Este producto ya tiene una venta activa');
+      currentStock = 1;
+      product.status = 'listed' as any;
+      product.stock = 1;
+      await this.productRepo.update({ id: productId }, { status: 'listed' as any, stock: 1 });
+    }
 
     const mainStaged = product.sku ? await this.stagedRepo.findOne({ where: { sku: product.sku } }) : null;
     const mainNotes = parseNotes(mainStaged?.notes);
@@ -1823,6 +1848,7 @@ export class AdminController {
     const soldIsMain = soldSku.toLowerCase() === mainSku.toLowerCase();
     const nextStock = Math.max(1, Number(product.stock || 0) + 1);
     await this.productRepo.update({ id: productId }, { status: 'listed' as any, stock: nextStock });
+    await this.publicRepo.update({ product_id: productId }, { is_published: true });
 
     const mainStaged = mainSku ? await this.stagedRepo.findOne({ where: { sku: mainSku } }) : null;
     if (mainStaged) await this.stagedRepo.update({ id: mainStaged.id }, { status: 'published' as any });
