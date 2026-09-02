@@ -633,8 +633,13 @@ export class AdminController {
     const fallbackPrice = Number(staged.price || 0);
     const price = Number.isFinite(parsedSalePrice) ? parsedSalePrice : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
     if (price < 0) throw new BadRequestException('invalid sale price');
-    const exchangeRate = Number(body?.exchangeRate);
-    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) throw new BadRequestException('valid exchange rate required');
+    const rawExchangeRate = body?.exchangeRate;
+    const exchangeRate = rawExchangeRate === undefined || rawExchangeRate === null || rawExchangeRate === ''
+      ? null
+      : Number(rawExchangeRate);
+    if (exchangeRate !== null && (!Number.isFinite(exchangeRate) || exchangeRate <= 0)) {
+      throw new BadRequestException('invalid exchange rate');
+    }
 
     const customerName = String(body?.name || body?.customerName || '').trim();
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '');
@@ -1779,8 +1784,13 @@ export class AdminController {
     const price = Number.isFinite(parsedSalePrice)
       ? parsedSalePrice
       : (Number.isFinite(fallbackPrice) ? fallbackPrice : 0);
-    const exchangeRate = Number(body?.exchangeRate);
-    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) throw new BadRequestException('valid exchange rate required');
+    const rawExchangeRate = body?.exchangeRate;
+    const exchangeRate = rawExchangeRate === undefined || rawExchangeRate === null || rawExchangeRate === ''
+      ? null
+      : Number(rawExchangeRate);
+    if (exchangeRate !== null && (!Number.isFinite(exchangeRate) || exchangeRate <= 0)) {
+      throw new BadRequestException('invalid exchange rate');
+    }
     const customerName = String(body?.name || body?.customerName || '').trim() || '-';
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '') || '-';
     const customerKindRaw = String(body?.customerKind || '').trim();
