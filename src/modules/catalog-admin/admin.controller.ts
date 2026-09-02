@@ -115,6 +115,24 @@ function stringifyNotes(value: any) {
   }
 }
 
+function isSealedCondition(value: unknown) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}+/gu, '');
+  return normalized === 'nuevo' || normalized === 'sellado';
+}
+
+function withoutStockLinks(value: unknown) {
+  const notes = { ...(parseNotes(value) || {}) };
+  delete notes.linkedMainSku;
+  delete notes.linkedMainTitle;
+  delete notes.linkedSkus;
+  delete notes.linkedSkuGroup;
+  return notes;
+}
+
 function normalizeMsSku(value: unknown) {
   const raw = String(value || '').trim().toUpperCase().replace(/\s+/g, '');
   if (!raw) return '';
@@ -1859,10 +1877,19 @@ export class AdminController {
     }
 
     if (!product && inventoryStaged) {
+      const inventoryNotes = parseNotes(inventoryStaged.notes);
+      const inventoryCondition =
+        inventoryStaged.product_condition ||
+        inventoryNotes?.productCondition ||
+        inventoryNotes?.estado ||
+        inventoryNotes?.specs?.estado;
+      const restoredStock = isSealedCondition(inventoryCondition)
+        ? Math.max(1, Number(inventoryStaged.stock || 0) + 1)
+        : 1;
       await this.stagedRepo.update(
         { id: inventoryStaged.id },
         {
-          stock: Math.max(1, Number(inventoryStaged.stock || 0) + 1),
+          stock: restoredStock,
           status: 'draft' as any,
         },
       );
@@ -1873,56 +1900,85 @@ export class AdminController {
 
     const mainSku = String(product.sku || '').trim();
     const soldIsMain = soldSku.toLowerCase() === mainSku.toLowerCase();
-    const nextStock = Math.max(1, Number(product.stock || 0) + 1);
+    const soldStaged = soldSku
+      ? await this.stagedRepo
+          .createQueryBuilder('staged')
+          .where('LOWER(staged.sku) = :sku', { sku: soldSku.toLowerCase() })
+          .getOne()
+      : null;
+    const soldNotes = parseNotes(soldStaged?.notes);
+    const productCondition =
+      soldStaged?.product_condition ||
+      product.product_condition ||
+      soldNotes?.productCondition ||
+      soldNotes?.estado ||
+      soldNotes?.specs?.estado;
+    const sealed = isSealedCondition(productCondition);
+    // Solo los sellados comparten una cantidad acumulada. Cada usado/open box
+    // representa un equipo concreto y, al anular su venta, vuelve con stock 1.
+    const nextStock = sealed ? Math.max(1, Number(product.stock || 0) + 1) : 1;
     await this.productRepo.update({ id: productId }, { status: 'listed' as any, stock: nextStock });
     await this.publicRepo.update({ product_id: productId }, { is_published: true });
 
     const mainStaged = mainSku ? await this.stagedRepo.findOne({ where: { sku: mainSku } }) : null;
-    if (mainStaged) await this.stagedRepo.update({ id: mainStaged.id }, { status: 'published' as any });
+    if (mainStaged) {
+      await this.stagedRepo.update(
+        { id: mainStaged.id },
+        { status: 'published' as any, ...(!sealed ? { stock: 1 } : {}) },
+      );
+    }
 
     if (!soldIsMain && soldSku) {
-      const linkedStaged = await this.stagedRepo
-        .createQueryBuilder('staged')
-        .where('LOWER(staged.sku) = :sku', { sku: soldSku.toLowerCase() })
-        .getOne();
+      const linkedStaged = soldStaged;
       if (linkedStaged) {
         const linkedNotes = parseNotes(linkedStaged.notes);
         await this.stagedRepo.update(
           { id: linkedStaged.id },
           {
             status: 'published' as any,
-            notes: stringifyNotes({
-              ...(linkedNotes || {}),
-              linkedMainSku: mainSku,
-              linkedMainTitle: product.title,
-              linkedSkuGroup: {
-                ...(linkedNotes?.linkedSkuGroup || {}),
-                mainSku,
-              },
-            }),
+            stock: 1,
+            notes: stringifyNotes(sealed
+              ? {
+                  ...(linkedNotes || {}),
+                  linkedMainSku: mainSku,
+                  linkedMainTitle: product.title,
+                  linkedSkuGroup: {
+                    ...(linkedNotes?.linkedSkuGroup || {}),
+                    mainSku,
+                  },
+                }
+              : withoutStockLinks(linkedNotes)),
           },
         );
       }
       await this.productRepo.update({ sku: soldSku }, { status: 'listed' as any, stock: 1 });
+      const restoredProduct = await this.productRepo.findOne({ where: { sku: soldSku } });
+      if (!sealed && restoredProduct) {
+        await this.publicRepo.update({ product_id: restoredProduct.id }, { is_published: true });
+      }
       if (mainStaged) {
         const mainNotes = parseNotes(mainStaged.notes);
         const currentSkus = Array.isArray(mainNotes?.linkedSkus)
           ? mainNotes.linkedSkus.map((value: unknown) => String(value || '').trim()).filter(Boolean)
           : [];
         const hasSku = currentSkus.some((sku: string) => sku.toLowerCase() === soldSku.toLowerCase());
-        const linkedSkus = hasSku ? currentSkus : [...currentSkus, soldSku];
+        const linkedSkus = sealed
+          ? (hasSku ? currentSkus : [...currentSkus, soldSku])
+          : currentSkus.filter((sku: string) => sku.toLowerCase() !== soldSku.toLowerCase());
         await this.stagedRepo.update(
           { id: mainStaged.id },
           {
-            notes: stringifyNotes({
-              ...(mainNotes || {}),
-              linkedSkus,
-              linkedSkuGroup: {
-                ...(mainNotes?.linkedSkuGroup || {}),
-                mainSku,
-                skus: linkedSkus,
-              },
-            }),
+            notes: stringifyNotes(sealed || linkedSkus.length
+              ? {
+                  ...(mainNotes || {}),
+                  linkedSkus,
+                  linkedSkuGroup: {
+                    ...(mainNotes?.linkedSkuGroup || {}),
+                    mainSku,
+                    skus: linkedSkus,
+                  },
+                }
+              : withoutStockLinks(mainNotes)),
           },
         );
       }
