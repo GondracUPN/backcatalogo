@@ -2046,6 +2046,16 @@ export class AdminController {
     return this.salesSync.dispatch(eventId);
   }
 
+  @Post('sales-sync/remote-status')
+  async updateSaleSyncRemoteStatus(
+    @Headers('x-macso-event-id') eventId: string,
+    @Body() body: any,
+  ) {
+    const normalizedEventId = String(eventId || '').trim();
+    if (!normalizedEventId) throw new BadRequestException('missing event id');
+    return this.salesSync.updateRemoteStatus(normalizedEventId, String(body?.status || '').trim());
+  }
+
   @Put('sales/:saleId')
   async updateSale(
     @Headers('authorization') authHeader: string,

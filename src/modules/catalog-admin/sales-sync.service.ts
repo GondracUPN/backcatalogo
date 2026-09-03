@@ -138,6 +138,20 @@ export class SalesSyncService implements OnModuleInit {
     return { eventId, ...(await this.dispatch(eventId)) };
   }
 
+  async updateRemoteStatus(eventId: string, remoteStatus: string) {
+    await this.ensureTable();
+    const allowed = new Set(['pending_confirmation', 'confirmed', 'rejected', 'pending_cancellation_confirmation', 'cancelled']);
+    if (!allowed.has(remoteStatus)) return { ok: false, status: 'invalid_status' };
+    const rows = await this.dataSource.query(
+      `UPDATE sale_sync_events
+          SET status = 'sent', remote_status = $2, last_error = NULL, updated_at = now()
+        WHERE id = $1
+        RETURNING id`,
+      [eventId, remoteStatus],
+    );
+    return { ok: rows.length > 0, status: remoteStatus };
+  }
+
   async retryPending() {
     await this.ensureTable();
     const rows = await this.dataSource.query(
