@@ -117,7 +117,12 @@ export class SalesSyncService implements OnModuleInit {
       );
       return { ok: true, status: String(result?.status || 'pending_confirmation') };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'No se pudo contactar a Servicios';
+      const baseMessage = error instanceof Error ? error.message : 'No se pudo contactar a Servicios';
+      const cause = (error as any)?.cause;
+      const causeDetail = String(cause?.code || cause?.message || '').trim();
+      const message = causeDetail && !baseMessage.includes(causeDetail)
+        ? `${baseMessage}: ${causeDetail}`
+        : baseMessage;
       await this.dataSource.query(
         `UPDATE sale_sync_events
          SET status = 'failed', attempts = attempts + 1, last_error = $2, updated_at = now()
