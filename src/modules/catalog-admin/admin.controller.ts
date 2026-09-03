@@ -1014,7 +1014,7 @@ export class AdminController {
   }
 
   @Get('catalog')
-  async listAdminCatalog(@Headers('authorization') authHeader: string) {
+  async listAdminCatalog(@Headers('authorization') authHeader: string): Promise<{ items: any[] }> {
     this.requireStaff(authHeader);
     const publishedRows = await this.publicRepo.find({
       where: { is_published: true as any },
@@ -1044,6 +1044,92 @@ export class AdminController {
     const linkedRowsSource = linkedRowsSourceRaw.filter(
       (row) => !soldSkuKeys.has(String(row.sku || '').trim().toLowerCase()),
     );
+    // Reparar grupos antiguos de usados/open box/arreglados que fueron creados
+    // como "SKU adicionales". Cada equipo necesita su propio product/public
+    // para poder editarse, verse, venderse y despublicarse por separado.
+    const legacyIndependentRows = linkedRowsSource.filter((row) => {
+      const rowNotes = parseNotes(row.notes);
+      const condition = row.product_condition || rowNotes?.productCondition || rowNotes?.estado;
+      return Boolean(String(rowNotes?.linkedMainSku || '').trim()) && !isSealedCondition(condition);
+    });
+    if (legacyIndependentRows.length) {
+      for (const linked of legacyIndependentRows) {
+        const linkedNotes = parseNotes(linked.notes);
+        const mainSku = String(linkedNotes?.linkedMainSku || '').trim();
+        const linkedSku = String(linked.sku || '').trim();
+        await this.productRepo.upsert(
+          {
+            sku: linkedSku,
+            title: linked.title,
+            price: String(linked.price || '0'),
+            sale_type: asSaleType(String(linked.sale_type || 'VENTA_SIMPLE').toUpperCase()),
+            discount: linked.discount || null,
+            final_price: linked.final_price || null,
+            min_offer_price: linked.min_offer_price || null,
+            product_condition: asProductCondition(linked.product_condition || null),
+            iphone_model: asIphoneModel(linked.iphone_model || null),
+            iphone_number: linked.iphone_number ?? null,
+            storage_gb: linked.storage_gb ?? null,
+            battery_cycles: linked.battery_cycles ?? null,
+            battery_health: linked.battery_health ?? null,
+            color: linked.color || null,
+            includes: asIncludesKind(linked.includes || null),
+            includes_extra: linked.includes_extra || null,
+            keyboard_layout: asKeyboardLayout(linked.keyboard_layout || null),
+            variant_group: linked.variant_group || linked.title || null,
+            status: 'listed' as any,
+            stock: 1,
+          },
+          { conflictPaths: ['sku'] },
+        );
+        const linkedProduct = await this.productRepo.findOne({ where: { sku: linkedSku } });
+        if (linkedProduct) {
+          const existingPublic = await this.publicRepo.findOne({ where: { product_id: linkedProduct.id } });
+          let slug = existingPublic?.slug || slugify(`${linked.title}-${linkedSku}`) || `producto-${linkedProduct.id}`;
+          let attempt = 1;
+          while (true) {
+            const slugOwner = await this.publicRepo.findOne({ where: { slug } });
+            if (!slugOwner || slugOwner.product_id === linkedProduct.id) break;
+            attempt += 1;
+            slug = `${slugify(`${linked.title}-${linkedSku}`)}-${attempt}`;
+          }
+          await this.publicRepo.upsert(
+            {
+              product_id: linkedProduct.id,
+              slug,
+              is_published: true,
+              category: linked.category || null,
+              tags: linked.tags || null,
+              images: linked.images || [],
+            },
+            { conflictPaths: ['product_id'] },
+          );
+        }
+        await this.stagedRepo.update(
+          { id: linked.id },
+          { status: 'published' as any, stock: 1, notes: stringifyNotes(withoutStockLinks(linkedNotes)) },
+        );
+        if (mainSku) {
+          const mainStaged = await this.stagedRepo.findOne({ where: { sku: mainSku } });
+          if (mainStaged) {
+            const mainNotes = parseNotes(mainStaged.notes);
+            const remainingSkus = (Array.isArray(mainNotes?.linkedSkus) ? mainNotes.linkedSkus : [])
+              .map((value: unknown) => String(value || '').trim())
+              .filter((sku: string) => sku && sku.toLowerCase() !== linkedSku.toLowerCase());
+            const nextNotes = remainingSkus.length
+              ? {
+                  ...mainNotes,
+                  linkedSkus: remainingSkus,
+                  linkedSkuGroup: { ...(mainNotes?.linkedSkuGroup || {}), mainSku, skus: remainingSkus },
+                }
+              : withoutStockLinks(mainNotes);
+            await this.stagedRepo.update({ id: mainStaged.id }, { stock: 1, notes: stringifyNotes(nextNotes) });
+          }
+          await this.productRepo.update({ sku: mainSku }, { stock: 1 });
+        }
+      }
+      return this.listAdminCatalog(authHeader);
+    }
     const skuSet = new Set(skus);
     const linkedRows = linkedRowsSource.filter((row) => {
       const linkedNotes = parseNotes(row.notes);
@@ -1052,6 +1138,7 @@ export class AdminController {
     const publishedStagedWithoutProduct = linkedRowsSource.filter((row) => !skuSet.has(String(row.sku || '').trim()));
     const pubByProduct = new Map(pubs.map((p) => [p.product_id, p] as const));
     const stagedBySku = new Map(stagedRows.map((s) => [s.sku, s] as const));
+    const productBySku = new Map(products.map((product) => [String(product.sku || '').trim().toLowerCase(), product] as const));
     const linkedByMainSku = new Map<string, StagedProduct[]>();
     for (const linked of linkedRows) {
       const linkedNotes = parseNotes(linked.notes);
@@ -1123,9 +1210,13 @@ export class AdminController {
             const linkedNotes = parseNotes(linked.notes);
             const linkedCondition = linked.product_condition || linkedNotes?.productCondition || linkedNotes?.estado;
             const sharedSealedStock = isSealedCondition(product.product_condition) && isSealedCondition(linkedCondition);
-            if (!sharedSealedStock) return linked;
+            const linkedProduct = productBySku.get(String(linked.sku || '').trim().toLowerCase()) || null;
+            const linkedPublic = linkedProduct ? pubByProduct.get(linkedProduct.id) || null : null;
+            const identity = { catalogProduct: linkedProduct, catalogPublic: linkedPublic };
+            if (!sharedSealedStock) return { ...linked, ...identity };
             return {
               ...linked,
+              ...identity,
               price: product.price,
               sale_type: product.sale_type,
               discount: product.discount,
