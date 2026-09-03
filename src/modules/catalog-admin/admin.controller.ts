@@ -1115,6 +1115,7 @@ export class AdminController {
           images: pub?.images || staged?.images || [],
           product,
           staged,
+          mainUnitSold: soldSkuKeys.has(String(product.sku || '').trim().toLowerCase()),
           // Solo los equipos sellados representan unidades intercambiables de
           // un mismo stock. Usados/Open Box/Arreglados conservan los datos de
           // cada equipo aunque se agrupen por modelo en la administración.
@@ -1723,7 +1724,13 @@ export class AdminController {
       );
       requestedLinked = candidate;
     }
-    const soldLinked = requestedLinked || availableLinked[0] || null;
+    const independentUnits = !isSealedCondition(
+      product.product_condition || mainStaged?.product_condition || mainNotes?.productCondition || mainNotes?.estado,
+    );
+    // En equipos usados/open box/arreglados, pulsar vender en la fila principal
+    // vende exactamente ese SKU. Solo el stock sellado puede tomar cualquier
+    // unidad enlazada de forma intercambiable.
+    const soldLinked = requestedLinked || (!independentUnits ? availableLinked[0] : null) || null;
     const soldUnitSku = soldLinked?.sku || product.sku || '';
     const soldAt = saleDateValue(body?.saleDate);
     if (!soldAt) throw new BadRequestException('invalid sale date');
@@ -1773,7 +1780,7 @@ export class AdminController {
           },
         );
       }
-    } else if (nextStock <= 0 && mainStaged) {
+    } else if ((independentUnits || nextStock <= 0) && mainStaged) {
       await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any, stock: 0 });
     }
     // La venta ya existía: solo se retira la unidad fantasma del grupo. No se
@@ -1932,7 +1939,7 @@ export class AdminController {
     const sealed = isSealedCondition(productCondition);
     // Solo los sellados comparten una cantidad acumulada. Cada usado/open box
     // representa un equipo concreto y, al anular su venta, vuelve con stock 1.
-    const nextStock = sealed ? Math.max(1, Number(product.stock || 0) + 1) : 1;
+    const nextStock = sealed || soldIsMain ? Math.max(1, Number(product.stock || 0) + 1) : 1;
     await this.productRepo.update({ id: productId }, { status: 'listed' as any, stock: nextStock });
     await this.publicRepo.update({ product_id: productId }, { is_published: true });
 
