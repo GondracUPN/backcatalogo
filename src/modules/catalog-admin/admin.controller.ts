@@ -1115,17 +1115,23 @@ export class AdminController {
           images: pub?.images || staged?.images || [],
           product,
           staged,
-          // Las unidades enlazadas forman un único stock publicado y comparten
-          // el precio comercial del producto principal. Sus precios antiguos
-          // de Inventario no deben mostrarse como precios de venta distintos.
-          linkedStaged: [...linkedExplicit, ...linkedFallback].map((linked) => ({
-            ...linked,
-            price: product.price,
-            sale_type: product.sale_type,
-            discount: product.discount,
-            final_price: product.final_price,
-            min_offer_price: product.min_offer_price,
-          })),
+          // Solo los equipos sellados representan unidades intercambiables de
+          // un mismo stock. Usados/Open Box/Arreglados conservan los datos de
+          // cada equipo aunque se agrupen por modelo en la administración.
+          linkedStaged: [...linkedExplicit, ...linkedFallback].map((linked) => {
+            const linkedNotes = parseNotes(linked.notes);
+            const linkedCondition = linked.product_condition || linkedNotes?.productCondition || linkedNotes?.estado;
+            const sharedSealedStock = isSealedCondition(product.product_condition) && isSealedCondition(linkedCondition);
+            if (!sharedSealedStock) return linked;
+            return {
+              ...linked,
+              price: product.price,
+              sale_type: product.sale_type,
+              discount: product.discount,
+              final_price: product.final_price,
+              min_offer_price: product.min_offer_price,
+            };
+          }),
         };
       })
       .sort((a, b) => (publishedRank.get(a.product_id) ?? 999999) - (publishedRank.get(b.product_id) ?? 999999));
