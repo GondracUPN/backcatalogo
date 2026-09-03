@@ -1044,6 +1044,24 @@ export class AdminController {
     const linkedRowsSource = linkedRowsSourceRaw.filter(
       (row) => !soldSkuKeys.has(String(row.sku || '').trim().toLowerCase()),
     );
+    // Una unidad marcada como published en inventario debe conservar activa su
+    // publicación. Esto repara separaciones antiguas que limpiaron el vínculo
+    // correctamente pero dejaron catalog_public apagado.
+    let restoredIndependentPublication = false;
+    for (const stagedRow of linkedRowsSource) {
+      const rowNotes = parseNotes(stagedRow.notes);
+      const condition = stagedRow.product_condition || rowNotes?.productCondition || rowNotes?.estado;
+      if (isSealedCondition(condition)) continue;
+      const stagedSku = String(stagedRow.sku || '').trim();
+      const standaloneProduct = stagedSku ? await this.productRepo.findOne({ where: { sku: stagedSku } }) : null;
+      if (!standaloneProduct || standaloneProduct.status === 'sold') continue;
+      const standalonePublic = await this.publicRepo.findOne({ where: { product_id: standaloneProduct.id } });
+      if (standalonePublic && !standalonePublic.is_published) {
+        await this.publicRepo.update({ id: standalonePublic.id }, { is_published: true });
+        restoredIndependentPublication = true;
+      }
+    }
+    if (restoredIndependentPublication) return this.listAdminCatalog(authHeader);
     // Reparar grupos antiguos de usados/open box/arreglados que fueron creados
     // como "SKU adicionales". Cada equipo necesita su propio product/public
     // para poder editarse, verse, venderse y despublicarse por separado.
