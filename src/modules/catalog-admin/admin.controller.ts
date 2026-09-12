@@ -8,11 +8,10 @@ import { CatalogProduct, IncludesKind, IphoneModel, KeyboardLayout, ProductCondi
 import { CatalogView } from '../../entities/catalog-view.entity';
 import { AuthService } from '../auth/auth.service';
 import { PullSyncService } from '../sync/pull.service';
-import { validateProductBeforePublish } from '../../utils/product-validation';
+import { getAllowedIphoneModelsByNumber, ProductVersionConfig, validateProductBeforePublish } from '../../utils/product-validation';
 import { SalesSyncService } from './sales-sync.service';
 
 const SALE_TYPES = new Set(['PREVENTA', 'VENTA_SIMPLE', 'PROMOCION', 'OFERTA']);
-const IPHONE_MODELS = new Set(['Normal', 'Plus', 'Pro', 'Pro Max', 'Mini', 'E']);
 const INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Ninguno', 'Otros']);
 const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
 const KEYBOARD_LAYOUTS = new Set(['Ingles', 'Espanol', 'Otro']);
@@ -51,19 +50,6 @@ function validIncludedAccessories(value: unknown, category: unknown) {
     return false;
   }
   return true;
-}
-
-function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
-  const map: Record<string, string[]> = {
-    '11': ['Normal', 'Pro', 'Pro Max'],
-    '12': ['Mini', 'Normal', 'Pro', 'Pro Max'],
-    '13': ['Mini', 'Normal', 'Pro', 'Pro Max'],
-    '14': ['Normal', 'Plus', 'Pro', 'Pro Max'],
-    '15': ['Normal', 'Plus', 'Pro', 'Pro Max'],
-    '16': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
-    '17': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
-  };
-  return map[String(numberRaw ?? '')] || [];
 }
 
 function asSaleType(value: string): SaleType {
@@ -515,10 +501,10 @@ export class AdminController {
     const includes = patch.includes ?? staged.includes;
     const includesExtra = patch.includes_extra ?? staged.includes_extra;
     const productCondition = patch.product_condition ?? staged.product_condition;
+    const versionConfig = await this.loadProductVersionConfig();
 
     if (saleType && !SALE_TYPES.has(saleType)) throw new BadRequestException('invalid sale_type');
     if (saleType) patch.sale_type = saleType;
-    if (iphoneModel && !IPHONE_MODELS.has(String(iphoneModel))) throw new BadRequestException('invalid iphone_model');
     if (includes && !INCLUDES_VALUES.has(String(includes)) && !validIncludedAccessories(includes, category)) {
       throw new BadRequestException(`invalid includes: ${String(includes)}`);
     }
@@ -547,7 +533,7 @@ export class AdminController {
       if (!isFinite(Number(storageGb)) || Number(storageGb) <= 0) {
         throw new BadRequestException('storage_gb invalid');
       }
-      const allowedModels = getAllowedIphoneModelsByNumber(iphoneNumber);
+      const allowedModels = getAllowedIphoneModelsByNumber(iphoneNumber, versionConfig);
       if (allowedModels.length && !allowedModels.includes(String(iphoneModel))) {
         throw new BadRequestException('iphone_model invalid for iphone_number');
       }
@@ -700,7 +686,8 @@ export class AdminController {
     if (!staged) throw new BadRequestException('not found');
     const saleType = String(staged.sale_type || '').toUpperCase();
     await this.ensureCartAvailable();
-    const validation = validateProductBeforePublish(staged);
+    const versionConfig = await this.loadProductVersionConfig();
+    const validation = validateProductBeforePublish(staged, undefined, versionConfig);
     if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
     const salePrice = Number(staged.price ?? 0);
@@ -1260,15 +1247,20 @@ export class AdminController {
     `);
   }
 
-  @Get('product-versions')
-  async getProductVersions(@Headers('authorization') authHeader: string) {
-    this.requireAdmin(authHeader);
+  private async loadProductVersionConfig(): Promise<ProductVersionConfig> {
     await this.ensureCatalogSettingsTable();
     const rows = await this.productRepo.manager.query(
       `SELECT value FROM catalog_settings WHERE key = $1 LIMIT 1`,
       [PRODUCT_VERSION_CONFIG_KEY],
     );
-    return { ok: true, config: rows?.[0]?.value || {} };
+    const value = rows?.[0]?.value;
+    return value && typeof value === 'object' ? value : {};
+  }
+
+  @Get('product-versions')
+  async getProductVersions(@Headers('authorization') authHeader: string) {
+    this.requireAdmin(authHeader);
+    return { ok: true, config: await this.loadProductVersionConfig() };
   }
 
   @Post('product-versions')
@@ -1424,9 +1416,10 @@ export class AdminController {
     if (action === 'publish') {
       await this.ensureCartAvailable();
       const items = await this.stagedRepo.findByIds(ids);
+      const versionConfig = await this.loadProductVersionConfig();
       for (const s of items) {
         const saleType = String(s.sale_type || '').toUpperCase();
-        const validation = validateProductBeforePublish(s);
+        const validation = validateProductBeforePublish(s, undefined, versionConfig);
         if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
         const salePrice = Number(s.price ?? 0);
@@ -1644,7 +1637,8 @@ export class AdminController {
       images: mergedImages,
       notes: stringifyNotes(mergedNotes),
     } as StagedProduct;
-    const validation = validateProductBeforePublish(stagedForValidation);
+    const versionConfig = await this.loadProductVersionConfig();
+    const validation = validateProductBeforePublish(stagedForValidation, undefined, versionConfig);
     if (!validation.ok) throw new BadRequestException(validation.errors.join('; '));
 
     const salePrice = Number(firstFilled(currentProduct.price, currentStaged?.price, replacement.price, 0) ?? 0);

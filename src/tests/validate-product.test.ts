@@ -54,6 +54,30 @@ const base = makeBase();
 const res = validateProductBeforePublish(base);
 assert(res.ok, `expected ok, got errors: ${res.errors.join(', ')}`);
 
+const iphone18 = makeBase();
+iphone18.title = 'iPhone 18 Air 512GB Azul';
+iphone18.iphone_number = 18;
+iphone18.iphone_model = 'Air';
+iphone18.storage_gb = 512;
+iphone18.color = 'Azul';
+const dynamicConfig = {
+  iphone: {
+    numbers: ['18'],
+    modelsByNumber: { '18': ['Air', 'Pro'] },
+  },
+};
+const res18WithoutConfig = validateProductBeforePublish(iphone18);
+assert(!res18WithoutConfig.ok, 'expected iPhone 18 to fail when it is not configured');
+const res18WithConfig = validateProductBeforePublish(iphone18, undefined, dynamicConfig);
+assert(res18WithConfig.ok, `expected configured iPhone 18 Air to be valid, got errors: ${res18WithConfig.errors.join(', ')}`);
+
+const iphone18WrongModel = { ...iphone18, iphone_model: 'Mini' } as StagedProduct;
+const res18WrongModel = validateProductBeforePublish(iphone18WrongModel, undefined, dynamicConfig);
+assert(
+  res18WrongModel.errors.includes('iphone_model invalido para iphone_number'),
+  'expected an unconfigured iPhone 18 model to fail',
+);
+
 const noCycles = makeBase();
 noCycles.battery_cycles = null as any;
 noCycles.battery_health = 95;
@@ -107,6 +131,20 @@ const macbookDecimalScreen = {
 const resMacbookDecimalScreen = validateProductBeforePublish(macbookDecimalScreen);
 assert(resMacbookDecimalScreen.ok, `expected ok with decimal MacBook screen, got errors: ${resMacbookDecimalScreen.errors.join(', ')}`);
 
+const futureMacbook = {
+  ...macbookDecimalScreen,
+  title: 'MacBook Air M6 17',
+  notes: JSON.stringify({
+    color: 'Silver',
+    includes: 'Caja + Cable',
+    specs: { detalle: { 'tamaño': '17', procesador: 'M6', ram: '32 GB', almacenamiento: '1 TB' } },
+  }),
+} as StagedProduct;
+const futureMacbookResult = validateProductBeforePublish(futureMacbook, undefined, {
+  macbook: { configByGamaProcessor: { Air: { M6: { sizes: ['17'] } } } },
+});
+assert(futureMacbookResult.ok, `expected configured MacBook screen to be valid, got errors: ${futureMacbookResult.errors.join(', ')}`);
+
 const ipad13Screen = {
   ...makeBase(),
   title: 'iPad Pro M4 13',
@@ -156,6 +194,28 @@ const ipad11Normal = {
 } as StagedProduct;
 const resIpad11Normal = validateProductBeforePublish(ipad11Normal);
 assert(resIpad11Normal.ok, `expected normal iPad 11 without processor to be valid, got errors: ${resIpad11Normal.errors.join(', ')}`);
+
+const futureWatch = {
+  ...makeBase(),
+  title: 'Apple Watch Series 12 46 mm GPS',
+  category: 'watch',
+  iphone_model: null,
+  iphone_number: null,
+  storage_gb: null,
+  sale_type: 'VENTA_SIMPLE',
+  min_offer_price: null,
+  notes: JSON.stringify({
+    color: 'Negro',
+    watchType: 'Normal',
+    watchSeries: '12',
+    watchSize: '46',
+    watchConnection: 'GPS',
+  }),
+} as StagedProduct;
+const futureWatchResult = validateProductBeforePublish(futureWatch, undefined, {
+  watch: { normalSeries: ['12'] },
+});
+assert(futureWatchResult.ok, `expected configured Apple Watch series to be valid, got errors: ${futureWatchResult.errors.join(', ')}`);
 
 // eslint-disable-next-line no-console
 console.log('validate-product.test.ts ok');

@@ -2,7 +2,8 @@ import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateCol
 
 export type ProductStatus = 'draft' | 'listed' | 'sold' | 'hidden';
 export type SaleType = 'PREVENTA' | 'VENTA_SIMPLE' | 'PROMOCION' | 'OFERTA';
-export type IphoneModel = 'Normal' | 'Plus' | 'Pro' | 'Pro Max' | 'Mini' | 'E';
+// Los modelos se administran desde catalog_settings; no deben quedar limitados en el tipo.
+export type IphoneModel = string;
 export type ProductCondition = 'Nuevo' | 'Usado' | 'Open Box' | 'Arreglado';
 export type IncludesKind = 'Caja + Cubo + Cable' | 'Caja + Cubo' | 'Caja + Cable' | 'Cubo + Cable' | 'Caja sola' | 'Cubo solo' | 'Cable solo' | 'Solo Cable' | 'Ninguno' | 'Otros';
 export type KeyboardLayout = 'Ingles' | 'Espanol' | 'Otro';

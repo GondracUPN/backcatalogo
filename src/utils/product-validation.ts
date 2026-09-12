@@ -2,9 +2,16 @@
 import { StagedProduct } from '../entities/staged-product.entity';
 
 const SALE_TYPES = new Set(['PREVENTA', 'VENTA_SIMPLE', 'PROMOCION', 'OFERTA']);
-const IPHONE_MODELS = new Set(['Normal', 'Plus', 'Pro', 'Pro Max', 'Mini', 'E']);
-const IPHONE_NUMBERS = new Set(['11', '12', '13', '14', '15', '16', '17']);
-const SCREEN_SIZES: Record<string, string[]> = {
+const DEFAULT_IPHONE_MODELS_BY_NUMBER: Record<string, string[]> = {
+  '11': ['Normal', 'Pro', 'Pro Max'],
+  '12': ['Mini', 'Normal', 'Pro', 'Pro Max'],
+  '13': ['Mini', 'Normal', 'Pro', 'Pro Max'],
+  '14': ['Normal', 'Plus', 'Pro', 'Pro Max'],
+  '15': ['Normal', 'Plus', 'Pro', 'Pro Max'],
+  '16': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
+  '17': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
+};
+const DEFAULT_SCREEN_SIZES: Record<string, string[]> = {
   macbook: ['13', '14', '15', '16'],
   ipad: ['10.2', '10.9', '11', '12.9', '13'],
 };
@@ -15,6 +22,24 @@ const WATCH_SERIES = new Set(['5', '6', '7', '8', '9', '10', '11']);
 const WATCH_CONNECTIONS = new Set(['GPS', 'GPS+Cellular', 'GPS + Cellular']);
 const WATCH_ULTRA = new Set(['1', '2', '3']);
 const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
+
+export type ProductVersionConfig = {
+  iphone?: {
+    numbers?: unknown[];
+    modelsByNumber?: Record<string, unknown[]>;
+    storageByNumberModel?: Record<string, Record<string, unknown[]>>;
+  };
+  ipad?: {
+    sizesByGamaVersion?: Record<string, Record<string, unknown[]>>;
+  };
+  macbook?: {
+    configByGamaProcessor?: Record<string, Record<string, { sizes?: unknown[] }>>;
+  };
+  watch?: {
+    normalSeries?: unknown[];
+    ultraVersions?: unknown[];
+  };
+};
 
 export type ValidationResult = {
   ok: boolean;
@@ -47,22 +72,41 @@ function screenSizeCandidates(value: unknown) {
   return Array.from(candidates);
 }
 
-function isAllowedScreenSize(value: unknown, category: 'macbook' | 'ipad') {
-  const allowed = SCREEN_SIZES[category];
+function configuredStrings(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values.map((value) => String(value ?? '').trim()).filter(Boolean);
+}
+
+function configuredScreenSizes(config: ProductVersionConfig | undefined, category: 'macbook' | 'ipad') {
+  const configured = category === 'macbook'
+    ? Object.values(config?.macbook?.configByGamaProcessor || {}).flatMap((processors) =>
+        Object.values(processors || {}).flatMap((processor) => configuredStrings(processor?.sizes)),
+      )
+    : Object.values(config?.ipad?.sizesByGamaVersion || {}).flatMap((versions) =>
+        Object.values(versions || {}).flatMap((sizes) => configuredStrings(sizes)),
+      );
+  return Array.from(new Set([...DEFAULT_SCREEN_SIZES[category], ...configured]));
+}
+
+function isAllowedScreenSize(value: unknown, category: 'macbook' | 'ipad', config?: ProductVersionConfig) {
+  const allowed = configuredScreenSizes(config, category);
   return screenSizeCandidates(value).some((candidate) => allowed.includes(candidate));
 }
 
-function getAllowedIphoneModelsByNumber(numberRaw: unknown) {
-  const map: Record<string, string[]> = {
-    '11': ['Normal', 'Pro', 'Pro Max'],
-    '12': ['Mini', 'Normal', 'Pro', 'Pro Max'],
-    '13': ['Mini', 'Normal', 'Pro', 'Pro Max'],
-    '14': ['Normal', 'Plus', 'Pro', 'Pro Max'],
-    '15': ['Normal', 'Plus', 'Pro', 'Pro Max'],
-    '16': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
-    '17': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
-  };
-  return map[String(numberRaw ?? '')] || [];
+export function getAllowedIphoneModelsByNumber(numberRaw: unknown, config?: ProductVersionConfig) {
+  const number = String(numberRaw ?? '').trim();
+  return Array.from(new Set([
+    ...(DEFAULT_IPHONE_MODELS_BY_NUMBER[number] || []),
+    ...configuredStrings(config?.iphone?.modelsByNumber?.[number]),
+  ]));
+}
+
+function getAllowedIphoneNumbers(config?: ProductVersionConfig) {
+  return new Set([
+    ...Object.keys(DEFAULT_IPHONE_MODELS_BY_NUMBER),
+    ...configuredStrings(config?.iphone?.numbers),
+    ...Object.keys(config?.iphone?.modelsByNumber || {}),
+  ]);
 }
 
 export function buildIphoneTitle(number?: number | string | null, model?: string | null, storageGb?: number | string | null, color?: string | null) {
@@ -105,7 +149,11 @@ function hasWatermark(url: string) {
   return u.includes('/uploads/wm-') || u.includes('/uploads/watermarked/') || u.includes('/uploads/wm/');
 }
 
-export function validateProductBeforePublish(staged: StagedProduct, product?: CatalogProduct): ValidationResult {
+export function validateProductBeforePublish(
+  staged: StagedProduct,
+  product?: CatalogProduct,
+  versionConfig?: ProductVersionConfig,
+): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   const notes = parseNotes(staged.notes);
@@ -161,7 +209,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
   if (category === 'macbook') {
     const screen = String(detalle?.['tamaño'] || detalle?.tamanio || detalle?.tamano || '').trim();
     if (!screen) errors.push('tamano de pantalla requerido');
-    if (screen && !isAllowedScreenSize(screen, 'macbook')) errors.push('tamano de pantalla invalido');
+    if (screen && !isAllowedScreenSize(screen, 'macbook', versionConfig)) errors.push('tamano de pantalla invalido');
     if (!String(detalle?.procesador || '').trim()) errors.push('procesador requerido');
     if (!String(detalle?.ram || '').trim()) errors.push('ram requerida');
     if (!String(detalle?.almacenamiento || '').trim()) errors.push('ssd requerido');
@@ -182,7 +230,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     const generacion = String(detalle?.generacion || '').trim();
     const procesador = String(detalle?.procesador || '').trim();
     if (!screen) errors.push('tamano de pantalla requerido');
-    if (screen && !isAllowedScreenSize(screen, 'ipad')) errors.push('tamano de pantalla invalido');
+    if (screen && !isAllowedScreenSize(screen, 'ipad', versionConfig)) errors.push('tamano de pantalla invalido');
     if (!gama) errors.push('gama requerida');
     if ((gama === 'Air' || gama === 'Pro') && !procesador) errors.push('procesador requerido');
     if ((gama === 'Normal' || gama === 'Mini') && !generacion) errors.push('generacion requerida');
@@ -207,7 +255,7 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     const batteryHealth = staged.battery_health ?? notes?.batteryHealth ?? notes?.bateria?.salud;
     const color = staged.color || notes?.color;
 
-    if (!iphoneModel || !IPHONE_MODELS.has(String(iphoneModel))) errors.push('iphone_model requerido');
+    if (!iphoneModel) errors.push('iphone_model requerido');
     if (!iphoneNumber) errors.push('iphone_number requerido');
     if (!storageGb) errors.push('storage requerido');
     if (!Number.isFinite(Number(storageGb)) || Number(storageGb) <= 0) {
@@ -222,11 +270,11 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (!Number.isFinite(Number(iphoneNumber)) || Number(iphoneNumber) <= 0) {
       errors.push('iphone_number invalido');
     }
-    if (iphoneNumber && !IPHONE_NUMBERS.has(String(iphoneNumber))) {
+    if (iphoneNumber && !getAllowedIphoneNumbers(versionConfig).has(String(iphoneNumber))) {
       errors.push('iphone_number invalido');
     }
     if (iphoneModel && iphoneNumber) {
-      const allowedModels = getAllowedIphoneModelsByNumber(iphoneNumber);
+      const allowedModels = getAllowedIphoneModelsByNumber(iphoneNumber, versionConfig);
       if (allowedModels.length && !allowedModels.includes(String(iphoneModel))) {
         errors.push('iphone_model invalido para iphone_number');
       }
@@ -259,12 +307,14 @@ export function validateProductBeforePublish(staged: StagedProduct, product?: Ca
     if (watchType === 'Normal') {
       const series = String(notes?.watchSeries || '').trim();
       const conn = String(notes?.watchConnection || '').trim();
-      if (!series || !WATCH_SERIES.has(series)) errors.push('watchSeries requerido');
+      const allowedSeries = new Set([...WATCH_SERIES, ...configuredStrings(versionConfig?.watch?.normalSeries)]);
+      if (!series || !allowedSeries.has(series)) errors.push('watchSeries requerido');
       if (!conn || !WATCH_CONNECTIONS.has(conn)) errors.push('watchConnection requerido');
     }
     if (watchType === 'Ultra') {
       const version = String(notes?.watchVersion || '').trim();
-      if (!version || !WATCH_ULTRA.has(version)) errors.push('watchVersion requerido');
+      const allowedVersions = new Set([...WATCH_ULTRA, ...configuredStrings(versionConfig?.watch?.ultraVersions)]);
+      if (!version || !allowedVersions.has(version)) errors.push('watchVersion requerido');
     }
     const autoTitle = buildAppleWatchTitle(
       watchType,
