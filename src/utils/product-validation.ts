@@ -9,11 +9,20 @@ const DEFAULT_IPHONE_MODELS_BY_NUMBER: Record<string, string[]> = {
   '14': ['Normal', 'Plus', 'Pro', 'Pro Max'],
   '15': ['Normal', 'Plus', 'Pro', 'Pro Max'],
   '16': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
-  '17': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'],
+  '17': ['Normal', 'Air', 'Pro', 'Pro Max'],
+};
+const DEFAULT_IPHONE_STORAGE: Record<string, Record<string, string[]>> = {
+  '11': { Normal: ['64', '128', '256'], Pro: ['64', '256', '512'], 'Pro Max': ['64', '256', '512'] },
+  '12': { Mini: ['64', '128', '256'], Normal: ['64', '128', '256'], Pro: ['128', '256', '512'], 'Pro Max': ['128', '256', '512'] },
+  '13': { Mini: ['128', '256', '512'], Normal: ['128', '256', '512'], Pro: ['128', '256', '512', '1TB'], 'Pro Max': ['128', '256', '512', '1TB'] },
+  '14': { Normal: ['128', '256', '512'], Plus: ['128', '256', '512'], Pro: ['128', '256', '512', '1TB'], 'Pro Max': ['128', '256', '512', '1TB'] },
+  '15': { Normal: ['128', '256', '512'], Plus: ['128', '256', '512'], Pro: ['128', '256', '512', '1TB'], 'Pro Max': ['256', '512', '1TB'] },
+  '16': { Normal: ['128', '256', '512'], Plus: ['128', '256', '512'], Pro: ['128', '256', '512', '1TB'], 'Pro Max': ['256', '512', '1TB'], E: ['128', '256', '512'] },
+  '17': { Normal: ['256', '512'], Air: ['256', '512', '1TB'], Pro: ['256', '512', '1TB'], 'Pro Max': ['256', '512', '1TB', '2TB'] },
 };
 const DEFAULT_SCREEN_SIZES: Record<string, string[]> = {
   macbook: ['13', '14', '15', '16'],
-  ipad: ['10.2', '10.9', '11', '12.9', '13'],
+  ipad: ['8.3', '10.2', '10.9', '11', '12.9', '13'],
 };
 const IPAD_CONNECTIVITY = new Set(['WiFi', 'WiFi + Celular', 'WiFi+Celular']);
 const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
@@ -22,6 +31,50 @@ const WATCH_SERIES = new Set(['5', '6', '7', '8', '9', '10', '11']);
 const WATCH_CONNECTIONS = new Set(['GPS', 'GPS+Cellular', 'GPS + Cellular']);
 const WATCH_ULTRA = new Set(['1', '2', '3']);
 const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
+const MAC_MINI_CONFIGS: Record<string, { chip: string; rams: string[]; storage: string[] }> = {
+  'm1-8-8': { chip: 'M1', rams: ['8', '16'], storage: ['256', '512', '1TB', '2TB'] },
+  'm2-8-10': { chip: 'M2', rams: ['8', '16', '24'], storage: ['256', '512', '1TB', '2TB'] },
+  'm2pro-10-16': { chip: 'M2 Pro', rams: ['16', '32'], storage: ['512', '1TB', '2TB', '4TB', '8TB'] },
+  'm2pro-12-19': { chip: 'M2 Pro', rams: ['16', '32'], storage: ['512', '1TB', '2TB', '4TB', '8TB'] },
+  'm4-10-10': { chip: 'M4', rams: ['16', '24', '32'], storage: ['256', '512', '1TB', '2TB'] },
+  'm4pro-12-16': { chip: 'M4 Pro', rams: ['24', '48', '64'], storage: ['512', '1TB', '2TB', '4TB', '8TB'] },
+  'm4pro-14-20': { chip: 'M4 Pro', rams: ['24', '48', '64'], storage: ['512', '1TB', '2TB', '4TB', '8TB'] },
+};
+const IMAC_CONFIGS: Record<string, { chip: string; rams: string[]; storage: string[] }> = {
+  'm1-8-7': { chip: 'M1', rams: ['8', '16'], storage: ['256', '512', '1TB'] },
+  'm1-8-8': { chip: 'M1', rams: ['8', '16'], storage: ['256', '512', '1TB', '2TB'] },
+  'm3-8-8': { chip: 'M3', rams: ['8', '16', '24'], storage: ['256', '512', '1TB'] },
+  'm3-8-10': { chip: 'M3', rams: ['8', '16', '24'], storage: ['256', '512', '1TB', '2TB'] },
+  'm4-8-8': { chip: 'M4', rams: ['16', '24'], storage: ['256', '512', '1TB'] },
+  'm4-10-10': { chip: 'M4', rams: ['16', '24', '32'], storage: ['256', '512', '1TB', '2TB'] },
+};
+const AIRPODS_CONFIGS: Record<string, { model: string; generation: string; charging: string[] }> = {
+  'airpods-1': { model: 'AirPods', generation: '1ª generación', charging: ['Estuche Lightning'] },
+  'airpods-2': { model: 'AirPods', generation: '2ª generación', charging: ['Estuche Lightning', 'Estuche de carga inalámbrica (Lightning)'] },
+  'airpods-3': { model: 'AirPods', generation: '3ª generación', charging: ['Estuche Lightning', 'Estuche MagSafe (Lightning)'] },
+  'airpods-4': { model: 'AirPods', generation: '4ª generación', charging: ['Estuche USB-C'] },
+  'airpods-4-anc': { model: 'AirPods', generation: '4ª generación con ANC', charging: ['Estuche MagSafe USB-C'] },
+  'airpods-5': { model: 'AirPods', generation: '5ª generación', charging: ['Estuche USB-C'] },
+  'airpods-5-wireless': { model: 'AirPods', generation: '5ª generación', charging: ['Estuche inalámbrico USB-C'] },
+  'airpods-pro-1': { model: 'AirPods Pro', generation: '1ª generación', charging: ['Estuche inalámbrico (Lightning)', 'Estuche MagSafe (Lightning)'] },
+  'airpods-pro-2-lightning': { model: 'AirPods Pro', generation: '2ª generación', charging: ['Estuche MagSafe (Lightning)'] },
+  'airpods-pro-2-usbc': { model: 'AirPods Pro', generation: '2ª generación', charging: ['Estuche MagSafe USB-C'] },
+  'airpods-pro-3': { model: 'AirPods Pro', generation: '3ª generación', charging: ['Estuche MagSafe USB-C'] },
+  'airpods-max-lightning': { model: 'AirPods Max', generation: '', charging: ['Lightning'] },
+  'airpods-max-usbc': { model: 'AirPods Max', generation: '', charging: ['USB-C'] },
+  'airpods-max-2': { model: 'AirPods Max', generation: '2ª generación', charging: ['USB-C'] },
+};
+
+function capacityValue(value: unknown) {
+  return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '').replace(/GB$/, '').replace(/SSD$/, '');
+}
+
+function allowedWatchSizes(series: string) {
+  if (['5', '6'].includes(series)) return ['40', '44'];
+  if (['7', '8', '9'].includes(series)) return ['41', '45'];
+  if (['10', '11'].includes(series)) return ['42', '46'];
+  return series ? ['42', '46'] : [];
+}
 
 export type ProductVersionConfig = {
   iphone?: {
@@ -95,10 +148,9 @@ function isAllowedScreenSize(value: unknown, category: 'macbook' | 'ipad', confi
 
 export function getAllowedIphoneModelsByNumber(numberRaw: unknown, config?: ProductVersionConfig) {
   const number = String(numberRaw ?? '').trim();
-  return Array.from(new Set([
-    ...(DEFAULT_IPHONE_MODELS_BY_NUMBER[number] || []),
-    ...configuredStrings(config?.iphone?.modelsByNumber?.[number]),
-  ]));
+  const canonical = DEFAULT_IPHONE_MODELS_BY_NUMBER[number];
+  if (canonical?.length) return [...canonical];
+  return configuredStrings(config?.iphone?.modelsByNumber?.[number]);
 }
 
 function getAllowedIphoneNumbers(config?: ProductVersionConfig) {
@@ -107,6 +159,14 @@ function getAllowedIphoneNumbers(config?: ProductVersionConfig) {
     ...configuredStrings(config?.iphone?.numbers),
     ...Object.keys(config?.iphone?.modelsByNumber || {}),
   ]);
+}
+
+function getAllowedIphoneStorage(numberRaw: unknown, modelRaw: unknown, config?: ProductVersionConfig) {
+  const number = String(numberRaw ?? '').trim();
+  const model = String(modelRaw ?? '').trim();
+  const canonical = DEFAULT_IPHONE_STORAGE[number]?.[model];
+  if (canonical?.length) return [...canonical];
+  return configuredStrings(config?.iphone?.storageByNumberModel?.[number]?.[model]);
 }
 
 export function buildIphoneTitle(number?: number | string | null, model?: string | null, storageGb?: number | string | null, color?: string | null) {
@@ -223,6 +283,36 @@ export function validateProductBeforePublish(
     if (!isNew && !includesValue) errors.push('incluye requerido');
   }
 
+  if (category === 'macmini' || category === 'imac') {
+    const variant = String(notes?.desktopVariant || detalle?.modeloHardware || '').trim();
+    const config = (category === 'macmini' ? MAC_MINI_CONFIGS : IMAC_CONFIGS)[variant];
+    const ram = capacityValue(detalle?.ram);
+    const storage = capacityValue(detalle?.almacenamiento);
+    const chip = String(detalle?.procesador || '').trim();
+    if (!config) errors.push('configuracion de hardware invalida');
+    if (config && chip !== config.chip) errors.push('procesador no corresponde a la configuracion');
+    if (config && !config.rams.includes(ram)) errors.push('ram no corresponde a la configuracion');
+    if (config && !config.storage.includes(storage)) errors.push('almacenamiento no corresponde a la configuracion');
+    if (category === 'imac' && String(detalle?.['tamaño'] || detalle?.tamanio || '').trim() !== '24') errors.push('tamano de iMac invalido');
+    if (category === 'imac' && variant === 'm4-10-10' && ram === '32' && storage === '256') errors.push('iMac M4 32 GB requiere SSD de 512 GB o superior');
+    if (!String(notes?.color || staged.color || '').trim()) errors.push('color requerido');
+    if (!isNew && !includesValue) errors.push('incluye requerido');
+  }
+
+  if (category === 'airpods') {
+    const variant = String(notes?.airpodsVariant || detalle?.audioVariant || '').trim();
+    const config = AIRPODS_CONFIGS[variant];
+    const model = String(notes?.airpodsModel || detalle?.modelo || '').trim();
+    const generation = String(notes?.airpodsGeneration || detalle?.generacion || '').trim();
+    const charging = String(notes?.airpodsCharging || detalle?.carga || '').trim();
+    if (!config) errors.push('version de AirPods invalida');
+    if (config && model !== config.model) errors.push('modelo de AirPods no corresponde a la version');
+    if (config && generation !== config.generation) errors.push('generacion de AirPods no corresponde a la version');
+    if (config && !config.charging.includes(charging)) errors.push('estuche de AirPods no corresponde a la version');
+    if (!String(notes?.color || staged.color || '').trim()) errors.push('color requerido');
+    if (!isNew && !includesValue) errors.push('incluye requerido');
+  }
+
   if (category === 'ipad') {
     const screen = String(detalle?.['tamaño'] || detalle?.tamanio || detalle?.tamano || '').trim();
     const conn = String(detalle?.conectividad || '').trim();
@@ -278,6 +368,9 @@ export function validateProductBeforePublish(
       if (allowedModels.length && !allowedModels.includes(String(iphoneModel))) {
         errors.push('iphone_model invalido para iphone_number');
       }
+      const allowedStorage = getAllowedIphoneStorage(iphoneNumber, iphoneModel, versionConfig);
+      const normalizedStorage = capacityValue(storageGb);
+      if (allowedStorage.length && !allowedStorage.includes(normalizedStorage)) errors.push('storage invalido para iphone_number y iphone_model');
     }
     if (!isPreventa && productCondition !== 'Nuevo' && iphoneNumber && Number(iphoneNumber) >= 15) {
       if (batteryCycles === '' || batteryCycles === null || batteryCycles === undefined) {
@@ -307,14 +400,18 @@ export function validateProductBeforePublish(
     if (watchType === 'Normal') {
       const series = String(notes?.watchSeries || '').trim();
       const conn = String(notes?.watchConnection || '').trim();
+      const size = String(notes?.watchSize ?? detalle?.['tamaño'] ?? detalle?.tamanio ?? '').trim();
       const allowedSeries = new Set([...WATCH_SERIES, ...configuredStrings(versionConfig?.watch?.normalSeries)]);
       if (!series || !allowedSeries.has(series)) errors.push('watchSeries requerido');
       if (!conn || !WATCH_CONNECTIONS.has(conn)) errors.push('watchConnection requerido');
+      if (!allowedWatchSizes(series).includes(size)) errors.push('watchSize invalido para watchSeries');
     }
     if (watchType === 'Ultra') {
       const version = String(notes?.watchVersion || '').trim();
       const allowedVersions = new Set([...WATCH_ULTRA, ...configuredStrings(versionConfig?.watch?.ultraVersions)]);
       if (!version || !allowedVersions.has(version)) errors.push('watchVersion requerido');
+      const size = String(notes?.watchSize ?? detalle?.['tamaño'] ?? detalle?.tamanio ?? '').trim();
+      if (size !== '49') errors.push('watchSize invalido para Apple Watch Ultra');
     }
     const autoTitle = buildAppleWatchTitle(
       watchType,

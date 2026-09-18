@@ -16,7 +16,7 @@ const INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + C
 const IPHONE_INCLUDES_VALUES = new Set(['Caja + Cubo + Cable', 'Caja + Cubo', 'Caja + Cable', 'Cubo + Cable', 'Caja sola', 'Cubo solo', 'Cable solo', 'Solo Cable', 'Otros', 'Ninguno']);
 const KEYBOARD_LAYOUTS = new Set(['Ingles', 'Espanol', 'Otro']);
 const PRODUCT_CONDITIONS = new Set(['Nuevo', 'Usado', 'Open Box', 'Arreglado']);
-const CATEGORIES = new Set(['macbook', 'ipad', 'iphone', 'watch', 'accesorios', 'otros']);
+const CATEGORIES = new Set(['macbook', 'macmini', 'imac', 'ipad', 'iphone', 'watch', 'airpods', 'accesorios', 'otros']);
 const PRODUCT_VERSION_CONFIG_KEY = 'product_versions';
 
 function validIncludedAccessories(value: unknown, category: unknown) {
@@ -229,6 +229,23 @@ export class AdminController {
     return payload;
   }
 
+  private assertStagedAccess(staff: any, staged: StagedProduct) {
+    const restrictedSeller = String(staff?.role || '').toUpperCase() === 'VENDEDOR' && !staff?.canViewServiceInventory;
+    if (restrictedSeller && Number(staged.owner_user_id) !== Number(staff.sub)) throw new UnauthorizedException();
+  }
+
+  private ownerUserIdForStaff(staff: any): number | null {
+    return String(staff?.role || '').toUpperCase() === 'VENDEDOR' && !staff?.canViewServiceInventory
+      ? Number(staff.sub)
+      : null;
+  }
+
+  private assertOwnedRecord(staff: any, record: any) {
+    const expected = this.ownerUserIdForStaff(staff);
+    const actual = record?.owner_user_id === null || record?.owner_user_id === undefined ? null : Number(record.owner_user_id);
+    if (actual !== expected) throw new UnauthorizedException();
+  }
+
   private async ensureCartAvailable() {
     const rows = await this.productRepo.manager.query(`SELECT to_regclass('public.cart_items') as name`);
     if (!rows?.[0]?.name) throw new BadRequestException('cart not available');
@@ -253,6 +270,7 @@ export class AdminController {
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_place_type text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS sale_location text NULL`);
         await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS exchange_rate numeric(10,4) NULL`);
+        await mgr.query(`ALTER TABLE sold_records ADD COLUMN IF NOT EXISTS owner_user_id integer NULL`);
       })().catch((error) => {
         this.soldRecordsReady = null;
         throw error;
@@ -276,8 +294,10 @@ export class AdminController {
       location_scope text NOT NULL,
       location_value text NOT NULL,
       metadata jsonb NULL,
+      owner_user_id integer NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+    await mgr.query(`ALTER TABLE contact_requests ADD COLUMN IF NOT EXISTS owner_user_id integer NULL`);
   }
 
   private async ensurePossibleClientsTable() {
@@ -300,10 +320,12 @@ export class AdminController {
       sale_place_type text NULL,
       sale_location text NULL,
       metadata jsonb NULL,
+      owner_user_id integer NULL,
       purchased_at timestamptz NULL,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     )`);
+    await mgr.query(`ALTER TABLE possible_clients ADD COLUMN IF NOT EXISTS owner_user_id integer NULL`);
     await mgr.query(`CREATE INDEX IF NOT EXISTS idx_possible_clients_status ON possible_clients(status)`);
     await mgr.query(`CREATE INDEX IF NOT EXISTS idx_possible_clients_created_at ON possible_clients(created_at DESC)`);
   }
@@ -338,11 +360,12 @@ export class AdminController {
     @Query('soloTiendasPawn') soloTiendasPawn?: string,
     @Query('savedPawnOnly') savedPawnOnly?: string,
   ) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
+    const privateSellerInventory = String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory;
     const shouldSyncPawnStores = pawnMode === 'sync' || truthyQuery(soloTiendasPawn);
     const shouldReadSavedPawnOnly = pawnMode === 'saved' || truthyQuery(savedPawnOnly);
     try {
-      if (!shouldReadSavedPawnOnly) {
+      if (!shouldReadSavedPawnOnly && !privateSellerInventory) {
         await this.pullSync.syncStaged({ includeExtraSearches: shouldSyncPawnStores });
       }
     } catch {}
@@ -376,6 +399,7 @@ export class AdminController {
       const query = this.stagedRepo
         .createQueryBuilder('staged')
         .where('(staged.title ILIKE :term OR staged.sku ILIKE :term)', { term });
+      if (privateSellerInventory) query.andWhere('staged.owner_user_id = :ownerUserId', { ownerUserId: staff.sub });
       if (status) query.andWhere('staged.status = :status', { status });
       else query.andWhere('staged.status NOT IN (:...hidden)', { hidden: ['published', 'hidden', 'sold'] });
       query.orderBy('staged.updated_at', 'DESC');
@@ -389,6 +413,7 @@ export class AdminController {
     }
     if (status) where.status = status;
     else where.status = Not(In(['published', 'hidden', 'sold'] as any) as any);
+    if (privateSellerInventory) where.owner_user_id = Number(staff.sub);
     const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
     const options: any = { where, order: { updated_at: 'DESC' as any } };
     if (!allRows) {
@@ -403,7 +428,7 @@ export class AdminController {
 
   @Post('staged/manual')
   async createManualStaged(@Headers('authorization') authHeader: string, @Body() body: any) {
-    this.requireAdmin(authHeader);
+    const staff = this.requireStaff(authHeader);
 
     const rawCategory = String(body?.category || 'otros').toLowerCase();
     const category = CATEGORIES.has(rawCategory) ? rawCategory : 'otros';
@@ -434,6 +459,7 @@ export class AdminController {
       images: Array.isArray(body?.images) ? body.images : [],
       notes: typeof body?.notes === 'string' ? body.notes : null,
       sale_type: saleType,
+      owner_user_id: String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory ? Number(staff.sub) : null,
     });
 
     const item = await this.stagedRepo.save(created);
@@ -442,7 +468,7 @@ export class AdminController {
 
   @Put('staged/:id')
   async updateStaged(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const allowed = [
       'title',
       'price',
@@ -489,6 +515,7 @@ export class AdminController {
 
     const staged = await this.stagedRepo.findOne({ where: { id } });
     if (!staged) throw new BadRequestException('not found');
+    this.assertStagedAccess(staff, staged);
 
     const category = String(patch.category ?? staged.category ?? '').toLowerCase();
     const saleType = String(patch.sale_type ?? staged.sale_type ?? '').toUpperCase();
@@ -591,9 +618,10 @@ export class AdminController {
     @Param('id') id: string,
     @Body() body?: any,
   ) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const staged = await this.stagedRepo.findOne({ where: { id } });
     if (!staged) throw new BadRequestException('staged product not found');
+    this.assertStagedAccess(staff, staged);
     const stagedStatus = String(staged.status || '').toLowerCase();
     if (stagedStatus === 'published' || stagedStatus === 'hidden') {
       throw new BadRequestException('El producto no se puede vender desde inventario en su estado actual');
@@ -647,17 +675,17 @@ export class AdminController {
         { stock: nextStock, status: nextStock <= 0 ? ('sold' as any) : staged.status },
       );
       const saleRows = await mgr.query(
-        `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-        [staged.source_id, staged.sku || '', staged.title || staged.sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+        `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location, owner_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [staged.source_id, staged.sku || '', staged.title || staged.sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation, staged.owner_user_id],
       );
       createdSale = saleRows[0];
       await mgr.query(
         `INSERT INTO possible_clients (
           source_request_id, cart_id, request_type, product_id, product_title, product_color, product_price,
           customer_name, customer_phone, location_scope, location_value, status, customer_kind,
-          sale_place_type, sale_location, purchased_at
-        ) VALUES (NULL,$1,'manual-inventory-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11)`,
+          sale_place_type, sale_location, purchased_at, owner_user_id
+        ) VALUES (NULL,$1,'manual-inventory-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11,$12)`,
         [
           `manual-inventory-${id}-${Date.now()}`,
           staged.source_id,
@@ -670,6 +698,7 @@ export class AdminController {
           salePlaceType,
           saleLocation,
           soldAt,
+          staged.owner_user_id,
         ],
       );
     });
@@ -681,9 +710,10 @@ export class AdminController {
 
   @Post('staged/:id/publish')
   async publish(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const staged = await this.stagedRepo.findOne({ where: { id } });
     if (!staged) throw new BadRequestException('not found');
+    this.assertStagedAccess(staff, staged);
     const saleType = String(staged.sale_type || '').toUpperCase();
     await this.ensureCartAvailable();
     const versionConfig = await this.loadProductVersionConfig();
@@ -1002,7 +1032,8 @@ export class AdminController {
 
   @Get('catalog')
   async listAdminCatalog(@Headers('authorization') authHeader: string): Promise<{ items: any[] }> {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
+    const privateSellerInventory = String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory;
     const publishedRows = await this.publicRepo.find({
       where: { is_published: true as any },
       order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
@@ -1185,6 +1216,7 @@ export class AdminController {
 
     const items = products
       .filter((product) => product.status !== 'sold')
+      .filter((product) => !privateSellerInventory || stagedBySku.get(product.sku)?.owner_user_id === Number(staff.sub))
       .filter((product) => !childSkuKeys.has(String(product.sku || '').trim().toLowerCase()))
       .filter((product) => {
         const pub = pubByProduct.get(product.id);
@@ -1503,7 +1535,7 @@ export class AdminController {
     @Param('productId') productId: string,
     @Body() body: any,
   ) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensureCartAvailable();
 
     const replacementStagedId = String(body?.stagedId || body?.replacementStagedId || '').trim();
@@ -1755,7 +1787,7 @@ export class AdminController {
     @Param('productId') productId: string,
     @Body() body?: any,
   ) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const product = await this.productRepo.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('product not found');
     // Marcar el producto como vendido (se acepta fecha en body pero no se persiste aún)
@@ -1776,6 +1808,7 @@ export class AdminController {
     }
 
     const mainStaged = product.sku ? await this.stagedRepo.findOne({ where: { sku: product.sku } }) : null;
+    if (mainStaged) this.assertStagedAccess(staff, mainStaged);
     const mainNotes = parseNotes(mainStaged?.notes);
     const linkedSkusFromMain = Array.isArray(mainNotes?.linkedSkus)
       ? mainNotes.linkedSkus.map((value: unknown) => String(value || '').trim()).filter(Boolean)
@@ -1918,9 +1951,9 @@ export class AdminController {
       : null;
     const mgr = this.productRepo.manager;
     const saleRows = await mgr.query(
-      `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [productId, sku, product.title || sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation],
+      `INSERT INTO sold_records (product_id, sku, product_title, sale_price, exchange_rate, sold_at, customer_name, customer_phone, customer_kind, sale_place_type, sale_location, owner_user_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [productId, sku, product.title || sku || 'Producto', price, exchangeRate, soldAt, customerName, customerPhone, customerKind, salePlaceType, saleLocation, (soldLinked || mainStaged)?.owner_user_id ?? null],
     );
     const createdSale = saleRows[0];
     await this.ensurePossibleClientsTable();
@@ -1942,9 +1975,10 @@ export class AdminController {
         customer_kind,
         sale_place_type,
         sale_location,
-        purchased_at
+        purchased_at,
+        owner_user_id
       )
-      VALUES (NULL,$1,'manual-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11)
+      VALUES (NULL,$1,'manual-sale',$2,$3,$4,$5,$6,$7,'-','-','purchased',$8,$9,$10,$11,$12)
       `,
       [
         `manual-${productId}-${Date.now()}`,
@@ -1958,6 +1992,7 @@ export class AdminController {
         salePlaceType || null,
         saleLocation || null,
         soldAt,
+        (soldLinked || mainStaged)?.owner_user_id ?? null,
       ],
     );
     const sync = await this.salesSync.enqueueAndDispatch('sale.created', createdSale);
@@ -2116,7 +2151,7 @@ export class AdminController {
 
   @Get('sales')
   async listSales(@Headers('authorization') authHeader: string) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
     await this.salesSync.ensureTable();
@@ -2148,8 +2183,9 @@ export class AdminController {
         ORDER BY se.created_at DESC
         LIMIT 1
       ) sync ON true
+      WHERE sr.owner_user_id IS NOT DISTINCT FROM $1
       ORDER BY sr.sold_at DESC, sr.created_at DESC
-    `);
+    `, [this.ownerUserIdForStaff(staff)]);
     return { items: rows };
   }
 
@@ -2178,13 +2214,14 @@ export class AdminController {
     @Param('saleId') saleId: string,
     @Body() body: any,
   ) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
 
     const currentRows = await mgr.query(`SELECT * FROM sold_records WHERE id = $1 LIMIT 1`, [saleId]);
     const current = currentRows[0];
     if (!current) throw new BadRequestException('sale not found');
+    this.assertOwnedRecord(staff, current);
 
     const salePrice = Number(body?.salePrice);
     if (!Number.isFinite(salePrice) || salePrice < 0) throw new BadRequestException('invalid sale price');
@@ -2215,7 +2252,7 @@ export class AdminController {
 
   @Get('contact-requests')
   async listContactRequests(@Headers('authorization') authHeader: string) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensureContactRequestsTable();
     const mgr = this.productRepo.manager;
     const rows = await mgr.query(`
@@ -2234,21 +2271,23 @@ export class AdminController {
         cr.metadata,
         cr.created_at
       FROM contact_requests cr
+      WHERE cr.owner_user_id IS NOT DISTINCT FROM $1
       ORDER BY cr.created_at DESC
       LIMIT 500
-    `);
+    `, [this.ownerUserIdForStaff(staff)]);
     return { items: rows };
   }
 
   @Post('contact-requests/:id/attended')
   async markContactRequestAttended(@Headers('authorization') authHeader: string, @Param('id') id: string) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensureContactRequestsTable();
     await this.ensurePossibleClientsTable();
     const mgr = this.productRepo.manager;
     const rows = await mgr.query(`SELECT * FROM contact_requests WHERE id = $1 LIMIT 1`, [id]);
     const request = rows?.[0];
     if (!request) throw new BadRequestException('contact request not found');
+    this.assertOwnedRecord(staff, request);
 
     const inserted = await mgr.query(
       `
@@ -2264,9 +2303,10 @@ export class AdminController {
         customer_phone,
         location_scope,
         location_value,
-        metadata
+        metadata,
+        owner_user_id
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       ON CONFLICT (source_request_id) DO UPDATE SET
         cart_id = EXCLUDED.cart_id,
         request_type = EXCLUDED.request_type,
@@ -2279,6 +2319,7 @@ export class AdminController {
         location_scope = EXCLUDED.location_scope,
         location_value = EXCLUDED.location_value,
         metadata = EXCLUDED.metadata,
+        owner_user_id = EXCLUDED.owner_user_id,
         updated_at = now()
       RETURNING *
       `,
@@ -2295,6 +2336,7 @@ export class AdminController {
         request.location_scope,
         request.location_value,
         request.metadata,
+        request.owner_user_id,
       ],
     );
     await mgr.query(`DELETE FROM contact_requests WHERE id = $1`, [id]);
@@ -2303,27 +2345,29 @@ export class AdminController {
 
   @Get('possible-clients')
   async listPossibleClients(@Headers('authorization') authHeader: string) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     const rows = await this.productRepo.manager.query(`
       SELECT *
       FROM possible_clients
+      WHERE owner_user_id IS NOT DISTINCT FROM $1
       ORDER BY
         CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
         created_at DESC
       LIMIT 500
-    `);
+    `, [this.ownerUserIdForStaff(staff)]);
     return { items: rows };
   }
 
   @Put('possible-clients/:id')
   async updatePossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
     const mgr = this.productRepo.manager;
     const currentRows = await mgr.query(`SELECT * FROM possible_clients WHERE id = $1 LIMIT 1`, [id]);
     const current = currentRows?.[0];
     if (!current) throw new BadRequestException('possible client not found');
+    this.assertOwnedRecord(staff, current);
 
     const firstFilled = (...values: unknown[]) => {
       for (const value of values) {
@@ -2385,16 +2429,22 @@ export class AdminController {
 
   @Post('possible-clients/:id/discard')
   async discardPossibleClient(@Headers('authorization') authHeader: string, @Param('id') id: string) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
+    const currentRows = await this.productRepo.manager.query(`SELECT * FROM possible_clients WHERE id = $1 LIMIT 1`, [id]);
+    if (!currentRows[0]) throw new BadRequestException('possible client not found');
+    this.assertOwnedRecord(staff, currentRows[0]);
     await this.productRepo.manager.query(`DELETE FROM possible_clients WHERE id = $1`, [id]);
     return { ok: true };
   }
 
   @Post('possible-clients/:id/purchase')
   async markPossibleClientPurchased(@Headers('authorization') authHeader: string, @Param('id') id: string, @Body() body: any) {
-    this.requireStaff(authHeader);
+    const staff = this.requireStaff(authHeader);
     await this.ensurePossibleClientsTable();
+    const currentRows = await this.productRepo.manager.query(`SELECT * FROM possible_clients WHERE id = $1 LIMIT 1`, [id]);
+    if (!currentRows[0]) throw new BadRequestException('possible client not found');
+    this.assertOwnedRecord(staff, currentRows[0]);
     const customerKind = String(body?.customerKind || '').trim();
     const salePlaceTypeRaw = String(body?.salePlaceType || '').trim();
     const salePlaceType = ['almacen', 'otro'].includes(salePlaceTypeRaw) ? salePlaceTypeRaw : null;

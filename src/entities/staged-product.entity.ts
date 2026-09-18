@@ -80,6 +80,9 @@ export class StagedProduct {
   @Column({ type: 'text', nullable: true })
   notes!: string | null;
 
+  @Column({ name: 'owner_user_id', type: 'int', nullable: true })
+  owner_user_id!: number | null;
+
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at!: Date;
 

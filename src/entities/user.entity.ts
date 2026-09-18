@@ -16,7 +16,9 @@ export class User {
   @Column({ type: 'enum', enum: ['ADMIN', 'VENDEDOR', 'CLIENTE'], default: 'CLIENTE' })
   role!: Role;
 
+  @Column({ name: 'can_view_service_inventory', type: 'boolean', default: false })
+  canViewServiceInventory!: boolean;
+
   @CreateDateColumn()
   createdAt!: Date;
 }
-

@@ -17,10 +17,10 @@ export class AuthController {
     // eslint-disable-next-line no-console
     console.log(`[Auth] login attempt for user: ${username}`);
     const user = await this.auth.validateUser(username, password);
-    const token = this.auth.signToken({ sub: user.id, username: user.username, role: user.role });
+    const token = this.auth.signToken({ sub: user.id, username: user.username, role: user.role, canViewServiceInventory: user.canViewServiceInventory });
     // Frontend espera roles en minúsculas ("admin", "vendedor", "cliente")
     const roleLc = String(user.role || '').toLowerCase();
-    return { access_token: token, user: { id: user.id, username: user.username, role: roleLc } };
+    return { access_token: token, user: { id: user.id, username: user.username, role: roleLc, canViewServiceInventory: user.canViewServiceInventory } };
   }
 
   @Get('me')
@@ -41,7 +41,7 @@ export class AuthController {
   async listUsers(@Headers('authorization') authHeader?: string) {
     const payload = this.requireRole(authHeader, ['ADMIN']);
     if (!payload) throw new ForbiddenException();
-    const users = await this.usersRepo.find({ select: { id: true, username: true, role: true } as any });
+    const users = await this.usersRepo.find({ select: { id: true, username: true, role: true, canViewServiceInventory: true } as any });
     // Opcional: normalizar rol a minúsculas para UI
     return users.map(u => ({ ...u, role: String(u.role).toLowerCase() }));
   }
@@ -58,8 +58,9 @@ export class AuthController {
     const exists = await this.usersRepo.findOne({ where: { username } });
     if (exists) throw new ConflictException('username already exists');
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await this.usersRepo.save(this.usersRepo.create({ username, passwordHash, role: roleUp as any }));
-    return { id: user.id, username: user.username, role: String(user.role).toLowerCase() };
+    const canViewServiceInventory = roleUp === 'VENDEDOR' && Boolean((body as any)?.canViewServiceInventory);
+    const user = await this.usersRepo.save(this.usersRepo.create({ username, passwordHash, role: roleUp as any, canViewServiceInventory }));
+    return { id: user.id, username: user.username, role: String(user.role).toLowerCase(), canViewServiceInventory: user.canViewServiceInventory };
   }
 
   @Put('users/:id')
@@ -83,9 +84,10 @@ export class AuthController {
 
     user.username = username;
     user.role = role as any;
+    user.canViewServiceInventory = role === 'VENDEDOR' && Boolean(body?.canViewServiceInventory);
     if (password) user.passwordHash = await bcrypt.hash(password, 10);
     const saved = await this.usersRepo.save(user);
-    return { id: saved.id, username: saved.username, role: String(saved.role).toLowerCase() };
+    return { id: saved.id, username: saved.username, role: String(saved.role).toLowerCase(), canViewServiceInventory: saved.canViewServiceInventory };
   }
 
   @Delete('users/:id')

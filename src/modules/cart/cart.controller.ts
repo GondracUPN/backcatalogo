@@ -116,8 +116,10 @@ export class CartController {
       location_scope text NOT NULL,
       location_value text NOT NULL,
       metadata jsonb NULL,
+      owner_user_id integer NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     )`);
+    await mgr.query(`ALTER TABLE contact_requests ADD COLUMN IF NOT EXISTS owner_user_id integer NULL`);
   }
 
   @Get()
@@ -283,26 +285,30 @@ export class CartController {
         qty: Number(row.qty || 1),
         price,
         lineTotal: price * Number(row.qty || 1),
+        ownerUserId: staged?.owner_user_id ?? null,
       };
     });
-    const first = rows[0];
-    const firstProduct = productById.get(first.product_id) || null;
-    const firstStaged = firstProduct?.sku ? stagedBySkuMap.get(firstProduct.sku) || null : null;
-    const productTitle = itemSummary
-      .map((item) => `${item.qty > 1 ? `${item.qty} x ` : ''}${item.title}${item.color ? ` ${item.color}` : ''}`.trim())
-      .join(' | ');
-    const productColor = itemSummary.length === 1 ? itemSummary[0]?.color || null : null;
-    const productPrice = itemSummary.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
-    const requestType = this.resolveRequestType(first, firstProduct, firstStaged);
-
     await this.ensureContactRequestsTable();
-    const metadata = {
-      items: itemSummary,
-      source: 'cart',
-      createdFrom: 'contact-modal',
-    };
-    const inserted = await this.cartItems.manager.query(
-      `INSERT INTO contact_requests (
+    const groups = new Map<string, typeof itemSummary>();
+    for (const item of itemSummary) {
+      const key = item.ownerUserId === null ? 'shared' : String(item.ownerUserId);
+      groups.set(key, [...(groups.get(key) || []), item]);
+    }
+    const insertedIds: string[] = [];
+    for (const groupItems of groups.values()) {
+      const firstItem = groupItems[0];
+      const firstRow = rows.find((row) => row.product_id === firstItem.productId)!;
+      const firstProduct = productById.get(firstRow.product_id) || null;
+      const firstStaged = firstProduct?.sku ? stagedBySkuMap.get(firstProduct.sku) || null : null;
+      const productTitle = groupItems
+        .map((item) => `${item.qty > 1 ? `${item.qty} x ` : ''}${item.title}${item.color ? ` ${item.color}` : ''}`.trim())
+        .join(' | ');
+      const productColor = groupItems.length === 1 ? groupItems[0]?.color || null : null;
+      const productPrice = groupItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
+      const requestType = this.resolveRequestType(firstRow, firstProduct, firstStaged);
+      const metadata = { items: groupItems, source: 'cart', createdFrom: 'contact-modal' };
+      const inserted = await this.cartItems.manager.query(
+        `INSERT INTO contact_requests (
         cart_id,
         request_type,
         product_id,
@@ -313,27 +319,20 @@ export class CartController {
         customer_phone,
         location_scope,
         location_value,
-        metadata
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+        metadata,
+        owner_user_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
       RETURNING id`,
-      [
-        cartId,
-        requestType,
-        first.product_id || null,
-        productTitle,
-        productColor,
-        Number(isFinite(productPrice) ? productPrice : 0).toFixed(2),
-        customerName,
-        phoneDigits,
-        locationScope,
-        resolvedLocationValue,
-        JSON.stringify(metadata),
-      ],
-    );
+        [cartId, requestType, firstRow.product_id || null, productTitle, productColor,
+          Number(isFinite(productPrice) ? productPrice : 0).toFixed(2), customerName, phoneDigits,
+          locationScope, resolvedLocationValue, JSON.stringify(metadata), firstItem.ownerUserId],
+      );
+      if (inserted?.[0]?.id) insertedIds.push(inserted[0].id);
+    }
 
     await this.cartItems.delete({ cart_id: cartId });
     await this.refreshSessionCart(req, cartId);
 
-    return { ok: true, id: inserted?.[0]?.id || null };
+    return { ok: true, id: insertedIds[0] || null, ids: insertedIds };
   }
 }

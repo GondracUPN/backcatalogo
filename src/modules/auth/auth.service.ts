@@ -26,14 +26,14 @@ export class AuthService {
     return user;
   }
 
-  signToken(payload: { sub: number; username: string; role: string }) {
+  signToken(payload: { sub: number; username: string; role: string; canViewServiceInventory?: boolean }) {
     return jwt.sign(payload, this.jwtSecret(), { expiresIn: '7d' });
   }
 
   verifyToken(token: string) {
     const payload = jwt.verify(token, this.jwtSecret());
     if (typeof payload === 'string') throw new UnauthorizedException('Invalid token');
-    const typed = payload as JwtPayload & { sub?: number | string; username?: string; role?: string };
+    const typed = payload as JwtPayload & { sub?: number | string; username?: string; role?: string; canViewServiceInventory?: boolean };
     if (typed.sub === undefined || !typed.username || !typed.role) {
       throw new UnauthorizedException('Invalid token payload');
     }
@@ -41,6 +41,7 @@ export class AuthService {
       sub: Number(typed.sub),
       username: String(typed.username),
       role: String(typed.role),
+      canViewServiceInventory: Boolean(typed.canViewServiceInventory),
     };
   }
 }

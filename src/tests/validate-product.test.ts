@@ -78,6 +78,20 @@ assert(
   'expected an unconfigured iPhone 18 model to fail',
 );
 
+const staleIphone17Config = {
+  iphone: {
+    numbers: ['17'],
+    modelsByNumber: { '17': ['Normal', 'Plus', 'Pro', 'Pro Max', 'E'] },
+    storageByNumberModel: { '17': { Plus: ['128'], E: ['128'] } },
+  },
+};
+const iphone17WrongLegacyModel = { ...makeBase(), iphone_number: 17, iphone_model: 'Plus', storage_gb: 128 } as StagedProduct;
+const res17WrongLegacyModel = validateProductBeforePublish(iphone17WrongLegacyModel, undefined, staleIphone17Config);
+assert(
+  res17WrongLegacyModel.errors.includes('iphone_model invalido para iphone_number'),
+  'la configuracion antigua no debe volver a habilitar iPhone 17 Plus o E',
+);
+
 const noCycles = makeBase();
 noCycles.battery_cycles = null as any;
 noCycles.battery_health = 95;
