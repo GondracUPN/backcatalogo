@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, Not } from 'typeorm';
 import { CatalogPublic } from '../../entities/catalog-public.entity';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
@@ -13,6 +13,11 @@ function normalizeVariantKey(value: unknown) {
     .normalize('NFD')
     .replace(/\p{Diacritic}+/gu, '')
     .replace(/\s+/g, ' ');
+}
+
+function publicCategoryGroup(value: unknown) {
+  const category = String(value || '').trim().toLowerCase();
+  return ['macbook', 'ipad', 'iphone', 'watch'].includes(category) ? category : 'otros';
 }
 
 @Controller('catalog')
@@ -205,7 +210,7 @@ export class CatalogController {
       id: pub.id,
       product_id: pub.product_id,
       slug: pub.slug,
-      category: pub.category,
+      category: publicCategoryGroup(pub.category),
       image: img,
       images: Array.isArray(pub.images) ? pub.images : [],
       title: product?.title || staged?.title || pub.slug,
@@ -335,7 +340,11 @@ export class CatalogController {
   @Get()
   async list(@Query('q') q?: string, @Query('category') category?: string) {
     const where: any = { is_published: true };
-    if (category) where.category = category;
+    if (category === 'otros') {
+      where.category = Not(In(['macbook', 'ipad', 'iphone', 'watch']));
+    } else if (category) {
+      where.category = category;
+    }
     const order = { sort_order: 'ASC' as any, created_at: 'DESC' as any };
     const pubs = await this.publicRepo.find({ where, order });
     const productIds = pubs.map((p) => p.product_id);
@@ -357,7 +366,7 @@ export class CatalogController {
           id: p.id,
           product_id: p.product_id,
           slug: p.slug,
-          category: p.category,
+          category: publicCategoryGroup(p.category),
           images: Array.isArray(p.images) ? p.images : [],
           product: this.publicProduct(product || null),
           staged: this.publicStaged(staged || null),
@@ -394,7 +403,7 @@ export class CatalogController {
 
     const categories = new Map<string, { key: string; total: number; minPrice: number | null }>();
     for (const row of rows) {
-      const key = String(row.pub.category || '').toLowerCase();
+      const key = publicCategoryGroup(row.pub.category);
       if (!key) continue;
       const current = categories.get(key) || { key, total: 0, minPrice: null };
       const price = this.priceMeta(row.product, row.staged).price;
@@ -478,7 +487,7 @@ export class CatalogController {
         id: pub.id,
         product_id: pub.product_id,
         slug: pub.slug,
-        category: pub.category,
+        category: publicCategoryGroup(pub.category),
         images: pub.images,
         product: this.publicProduct(product),
         staged: this.publicStaged(staged),
