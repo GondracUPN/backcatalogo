@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Put, Query, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, ILike, In, Not } from 'typeorm';
+import { Repository, ILike, In, IsNull, Not } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { StagedProduct } from '../../entities/staged-product.entity';
 import { CatalogPublic } from '../../entities/catalog-public.entity';
@@ -230,8 +230,9 @@ export class AdminController {
   }
 
   private assertStagedAccess(staff: any, staged: StagedProduct) {
-    const restrictedSeller = String(staff?.role || '').toUpperCase() === 'VENDEDOR' && !staff?.canViewServiceInventory;
-    if (restrictedSeller && Number(staged.owner_user_id) !== Number(staff.sub)) throw new UnauthorizedException();
+    const expected = this.ownerUserIdForStaff(staff);
+    const actual = staged.owner_user_id === null || staged.owner_user_id === undefined ? null : Number(staged.owner_user_id);
+    if (actual !== expected) throw new UnauthorizedException();
   }
 
   private ownerUserIdForStaff(staff: any): number | null {
@@ -240,9 +241,15 @@ export class AdminController {
       : null;
   }
 
+  private ownerUserIdForRecord(record: any): number | null {
+    return record?.owner_user_id === null || record?.owner_user_id === undefined
+      ? null
+      : Number(record.owner_user_id);
+  }
+
   private assertOwnedRecord(staff: any, record: any) {
     const expected = this.ownerUserIdForStaff(staff);
-    const actual = record?.owner_user_id === null || record?.owner_user_id === undefined ? null : Number(record.owner_user_id);
+    const actual = this.ownerUserIdForRecord(record);
     if (actual !== expected) throw new UnauthorizedException();
   }
 
@@ -362,6 +369,7 @@ export class AdminController {
   ) {
     const staff = this.requireStaff(authHeader);
     const privateSellerInventory = String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory;
+    const visibleOwnerUserId = this.ownerUserIdForStaff(staff);
     const shouldSyncPawnStores = pawnMode === 'sync' || truthyQuery(soloTiendasPawn);
     const shouldReadSavedPawnOnly = pawnMode === 'saved' || truthyQuery(savedPawnOnly);
     try {
@@ -399,7 +407,8 @@ export class AdminController {
       const query = this.stagedRepo
         .createQueryBuilder('staged')
         .where('(staged.title ILIKE :term OR staged.sku ILIKE :term)', { term });
-      if (privateSellerInventory) query.andWhere('staged.owner_user_id = :ownerUserId', { ownerUserId: staff.sub });
+      if (visibleOwnerUserId === null) query.andWhere('staged.owner_user_id IS NULL');
+      else query.andWhere('staged.owner_user_id = :ownerUserId', { ownerUserId: visibleOwnerUserId });
       if (status) query.andWhere('staged.status = :status', { status });
       else query.andWhere('staged.status NOT IN (:...hidden)', { hidden: ['published', 'hidden', 'sold'] });
       query.orderBy('staged.updated_at', 'DESC');
@@ -413,7 +422,7 @@ export class AdminController {
     }
     if (status) where.status = status;
     else where.status = Not(In(['published', 'hidden', 'sold'] as any) as any);
-    if (privateSellerInventory) where.owner_user_id = Number(staff.sub);
+    where.owner_user_id = visibleOwnerUserId === null ? IsNull() : visibleOwnerUserId;
     const allRows = ['all', 'todos', '0', '-1'].includes(String(pageSize).toLowerCase());
     const options: any = { where, order: { updated_at: 'DESC' as any } };
     if (!allRows) {
@@ -1033,7 +1042,7 @@ export class AdminController {
   @Get('catalog')
   async listAdminCatalog(@Headers('authorization') authHeader: string): Promise<{ items: any[] }> {
     const staff = this.requireStaff(authHeader);
-    const privateSellerInventory = String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory;
+    const visibleOwnerUserId = this.ownerUserIdForStaff(staff);
     const publishedRows = await this.publicRepo.find({
       where: { is_published: true as any },
       order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
@@ -1044,14 +1053,17 @@ export class AdminController {
     const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
     const skus = products.map((p) => p.sku).filter(Boolean);
     const pubs = publishedRows;
-    const stagedRows = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
-    const linkedRowsSourceRaw = skus.length
+    const stagedRowsRaw = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
+    const stagedRows = stagedRowsRaw.filter((row) => this.ownerUserIdForRecord(row) === visibleOwnerUserId);
+    const stagedOwnerBySku = new Map(stagedRowsRaw.map((row) => [row.sku, this.ownerUserIdForRecord(row)] as const));
+    const linkedRowsSourceUnscoped = skus.length
       ? await this.stagedRepo.find({
           where: { status: 'published' as any },
           order: { updated_at: 'DESC' as any },
           take: 1000,
         })
       : [];
+    const linkedRowsSourceRaw = linkedRowsSourceUnscoped.filter((row) => this.ownerUserIdForRecord(row) === visibleOwnerUserId);
     await this.ensureSoldRecordsTable();
     const soldSkuRows = await this.productRepo.manager.query(
       `SELECT DISTINCT LOWER(COALESCE(sku, '')) AS sku FROM sold_records WHERE COALESCE(sku, '') <> ''`,
@@ -1216,7 +1228,10 @@ export class AdminController {
 
     const items = products
       .filter((product) => product.status !== 'sold')
-      .filter((product) => !privateSellerInventory || stagedBySku.get(product.sku)?.owner_user_id === Number(staff.sub))
+      .filter((product) => {
+        const hasStagedOwner = stagedOwnerBySku.has(product.sku);
+        return hasStagedOwner ? stagedOwnerBySku.get(product.sku) === visibleOwnerUserId : visibleOwnerUserId === null;
+      })
       .filter((product) => !childSkuKeys.has(String(product.sku || '').trim().toLowerCase()))
       .filter((product) => {
         const pub = pubByProduct.get(product.id);
