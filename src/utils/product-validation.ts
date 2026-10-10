@@ -66,7 +66,12 @@ const AIRPODS_CONFIGS: Record<string, { model: string; generation: string; charg
 };
 
 function capacityValue(value: unknown) {
-  return String(value ?? '').trim().toUpperCase().replace(/\s+/g, '').replace(/GB$/, '').replace(/SSD$/, '');
+  const raw = String(value ?? '').trim().toUpperCase().replace(/\s+/g, '').replace(/SSD$/, '');
+  const match = raw.match(/^(\d+(?:[.,]\d+)?)(GB|TB)?$/);
+  if (!match) return raw;
+  const amount = Number(match[1].replace(',', '.'));
+  const gigabytes = match[2] === 'TB' ? amount * 1024 : amount;
+  return gigabytes >= 1024 && gigabytes % 1024 === 0 ? `${gigabytes / 1024}TB` : String(gigabytes);
 }
 
 function allowedWatchSizes(series: string) {
@@ -370,7 +375,7 @@ export function validateProductBeforePublish(
       }
       const allowedStorage = getAllowedIphoneStorage(iphoneNumber, iphoneModel, versionConfig);
       const normalizedStorage = capacityValue(storageGb);
-      if (allowedStorage.length && !allowedStorage.includes(normalizedStorage)) errors.push('storage invalido para iphone_number y iphone_model');
+      if (allowedStorage.length && !allowedStorage.some((value) => capacityValue(value) === normalizedStorage)) errors.push('storage invalido para iphone_number y iphone_model');
     }
     if (!isPreventa && productCondition !== 'Nuevo' && iphoneNumber && Number(iphoneNumber) >= 15) {
       if (batteryCycles === '' || batteryCycles === null || batteryCycles === undefined) {

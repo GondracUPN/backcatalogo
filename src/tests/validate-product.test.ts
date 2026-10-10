@@ -54,6 +54,14 @@ const base = makeBase();
 const res = validateProductBeforePublish(base);
 assert(res.ok, `expected ok, got errors: ${res.errors.join(', ')}`);
 
+const iphone15ProMax1Tb = { ...makeBase(), title: 'iPhone 15 Pro Max 1TB Silver', iphone_model: 'Pro Max', storage_gb: 1024 } as StagedProduct;
+const res15ProMax1Tb = validateProductBeforePublish(iphone15ProMax1Tb);
+assert(res15ProMax1Tb.ok, `1024 GB debe validarse como 1TB: ${res15ProMax1Tb.errors.join(', ')}`);
+
+const iphone15ProMax128Gb = { ...iphone15ProMax1Tb, storage_gb: 128 } as StagedProduct;
+const res15ProMax128Gb = validateProductBeforePublish(iphone15ProMax128Gb);
+assert(res15ProMax128Gb.errors.includes('storage invalido para iphone_number y iphone_model'), '128 GB debe seguir rechazado para iPhone 15 Pro Max');
+
 const iphone18 = makeBase();
 iphone18.title = 'iPhone 18 Air 512GB Azul';
 iphone18.iphone_number = 18;
