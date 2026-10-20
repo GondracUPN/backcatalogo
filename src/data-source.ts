@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import * as dotenv from 'dotenv';
+import { databaseUrl } from './utils/database-url';
 import { User } from './entities/user.entity';
 import { Producto } from './entities/producto.entity';
 import { CatalogProduct } from './entities/catalog-product.entity';
@@ -11,16 +12,18 @@ import { Order } from './entities/order.entity';
 import { CartItem } from './entities/cart-item.entity';
 import { OfferAttempt } from './entities/offer-attempt.entity';
 import { CatalogView } from './entities/catalog-view.entity';
+import { SiteTheme } from './entities/site-theme.entity';
 
 dotenv.config();
+const url = databaseUrl();
 
 // Exportar una única instancia (default) como requiere el CLI de TypeORM
 export default new DataSource({
   type: 'postgres',
-  url: process.env.DATABASE_URL,
-  entities: [User, Producto, CatalogProduct, SyncLog, StagedProduct, CatalogPublic, Order, CartItem, OfferAttempt, CatalogView],
+  url,
+  entities: [User, Producto, CatalogProduct, SyncLog, StagedProduct, CatalogPublic, Order, CartItem, OfferAttempt, CatalogView, SiteTheme],
   migrations: ['src/migrations/*.ts'],
-  ssl: process.env.DATABASE_URL?.includes('sslmode=require')
+  ssl: url.includes('sslmode=require')
     ? { rejectUnauthorized: false }
     : undefined,
 });

@@ -8,6 +8,7 @@ function createManager(calls: QueryCall[]) {
   return {
     async query(sql: string, params?: unknown[]) {
       calls.push({ sql, params });
+      if (/INSERT INTO sold_records/i.test(sql)) return [{ id: 'sale-1' }];
       return [];
     },
   };
@@ -19,7 +20,7 @@ async function testMarkSoldUsesExplicitSalePrice() {
 
   const productRepo = {
     async findOne() {
-      return { id: 'prod-1', sku: 'MBA-001', price: '4500.00' };
+      return { id: 'prod-1', sku: 'MBA-001', price: '4500.00', stock: 1, status: 'listed' };
     },
     async update(where: unknown, patch: unknown) {
       updates.push({ where, patch });
@@ -30,23 +31,28 @@ async function testMarkSoldUsesExplicitSalePrice() {
 
   const controller = new AdminController(
     { verifyToken: () => ({ role: 'ADMIN' }) } as any,
-    {} as any,
-    {} as any,
+    { findOne: async () => null, find: async () => [] } as any,
+    { update: async () => ({ affected: 1 }), findOne: async () => null } as any,
     productRepo,
-    { manager: createManager([]) } as any,
+    { manager: createManager([]), findOne: async () => null, find: async () => [] } as any,
     { syncStaged: async () => undefined } as any,
+    { enqueueAndDispatch: async () => undefined } as any,
   );
 
   const result = await controller.markSold('Bearer ok', 'prod-1', {
     saleDate: '2026-04-08',
     salePrice: '3999.50',
+    customerName: 'Cliente de prueba',
+    customerPhone: '900000000',
+    clientPhotoUrl: '/clientes/test.jpg',
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(updates, [{ where: { id: 'prod-1' }, patch: { status: 'sold' } }]);
-  assert.equal(queries.length, 2);
-  assert.match(queries[1].sql, /INSERT INTO sold_records/i);
-  assert.deepEqual(queries[1].params?.slice(0, 3), ['prod-1', 'MBA-001', 3999.5]);
+  assert.deepEqual(updates, [{ where: { id: 'prod-1' }, patch: { status: 'sold', stock: 0 } }]);
+  const saleInsert = queries.find((query) => /INSERT INTO sold_records/i.test(query.sql));
+  assert.ok(saleInsert);
+  assert.deepEqual(saleInsert.params?.slice(0, 2), ['prod-1', 'MBA-001']);
+  assert.equal(saleInsert.params?.[3], 3999.5);
 }
 
 async function testMarkSoldFallsBackToCatalogPrice() {
@@ -54,28 +60,33 @@ async function testMarkSoldFallsBackToCatalogPrice() {
 
   const controller = new AdminController(
     { verifyToken: () => ({ role: 'ADMIN' }) } as any,
-    {} as any,
-    {} as any,
+    { findOne: async () => null, find: async () => [] } as any,
+    { update: async () => ({ affected: 1 }), findOne: async () => null } as any,
     {
       async findOne() {
-        return { id: 'prod-1', sku: 'MBA-001', price: '4500.00' };
+        return { id: 'prod-1', sku: 'MBA-001', price: '4500.00', stock: 1, status: 'listed' };
       },
       async update() {
         return { affected: 1 };
       },
       manager: createManager(queries),
     } as any,
-    { manager: createManager([]) } as any,
+    { manager: createManager([]), findOne: async () => null, find: async () => [] } as any,
     { syncStaged: async () => undefined } as any,
+    { enqueueAndDispatch: async () => undefined } as any,
   );
 
   await controller.markSold('Bearer ok', 'prod-1', {
     saleDate: '2026-04-08',
     salePrice: '',
+    customerName: 'Cliente de prueba',
+    customerPhone: '900000000',
+    clientPhotoUrl: '/clientes/test.jpg',
   });
 
-  assert.equal(queries.length, 2);
-  assert.equal(queries[1].params?.[2], 4500);
+  const saleInsert = queries.find((query) => /INSERT INTO sold_records/i.test(query.sql));
+  assert.ok(saleInsert);
+  assert.equal(saleInsert.params?.[3], 4500);
 }
 
 async function testTrackViewStoresCanonicalProductData() {

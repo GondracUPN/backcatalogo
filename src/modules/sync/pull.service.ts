@@ -1,11 +1,25 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CatalogProduct, IncludesKind, IphoneModel, KeyboardLayout, ProductCondition, SaleType } from '../../entities/catalog-product.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
 import * as crypto from 'node:crypto';
 
 type UpstreamKind = 'catalog' | 'staged';
+
+type PageLookup = {
+  productsBySku: Map<string, CatalogProduct>;
+  stagedBySource: Map<string, StagedProduct>;
+};
+
+export type SyncStatus = {
+  lastResult: unknown;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  lastError: string | null;
+  running?: boolean;
+};
 
 type SyncQuery = Record<string, string | number | undefined>;
 
@@ -36,6 +50,9 @@ function asProductCondition(value: string | null) {
 @Injectable()
 export class PullSyncService {
   private logger = new Logger(PullSyncService.name);
+  private inFlight: Promise<any> | null = null;
+  private inFlightExtra = false;
+  private status: SyncStatus = { lastResult: null, startedAt: null, finishedAt: null, durationMs: null, lastError: null };
 
   constructor(
     @InjectRepository(CatalogProduct) private products: Repository<CatalogProduct>,
@@ -627,16 +644,18 @@ export class PullSyncService {
     };
   }
 
-  private async upsertFromItem(item: any) {
+  private async upsertFromItem(item: any, known?: PageLookup) {
     const row = this.stagedRowFromItem(item);
     if (!row) return;
 
     // Inventory synchronization must never resurrect a unit already sold
     // locally, even when the upstream service still reports it as available.
-    const [existingProduct, existingStaged] = await Promise.all([
-      this.products.findOne({ where: { sku: row.sku } }),
-      this.staged.findOne({ where: { source_id: row.source_id } }),
-    ]);
+    const [existingProduct, existingStaged] = known
+      ? [known.productsBySku.get(row.sku) ?? null, known.stagedBySource.get(row.source_id) ?? null]
+      : await Promise.all([
+          this.products.findOne({ where: { sku: row.sku } }),
+          this.staged.findOne({ where: { source_id: row.source_id } }),
+        ]);
     const productWasSold = String(existingProduct?.status || '').toLowerCase() === 'sold';
     const stagedWasSold = String(existingStaged?.status || '').toLowerCase() === 'sold';
 
@@ -690,9 +709,104 @@ export class PullSyncService {
       },
       { conflictPaths: ['source_id'] },
     );
+    if (known) {
+      known.productsBySku.set(row.sku, { status: productWasSold ? 'sold' : row.status } as any);
+      known.stagedBySource.set(row.source_id, { status: stagedWasSold || productWasSold ? 'sold' : row.status } as any);
+    }
   }
 
-  async sync(kind: UpstreamKind, options: SyncOptions = {}) {
+  // Una sola consulta por tabla para toda la página, en lugar de 4 consultas
+  // secuenciales por producto (existsInLocalDb + upsertFromItem).
+  private async lookupPage(items: any[]): Promise<PageLookup> {
+    const skus = new Set<string>();
+    const sourceIds = new Set<string>();
+    for (const item of items) {
+      const keys = this.itemKeys(item);
+      const row = this.stagedRowFromItem(item);
+      if (keys.sku) skus.add(keys.sku);
+      if (keys.sourceId) sourceIds.add(keys.sourceId);
+      if (row?.sku) skus.add(row.sku);
+      if (row?.source_id) sourceIds.add(row.source_id);
+    }
+    const [products, staged] = await Promise.all([
+      skus.size ? this.products.findBy({ sku: In(Array.from(skus)) }) : Promise.resolve([] as CatalogProduct[]),
+      sourceIds.size ? this.staged.findBy({ source_id: In(Array.from(sourceIds)) }) : Promise.resolve([] as StagedProduct[]),
+    ]);
+    return {
+      productsBySku: new Map(products.map((product) => [product.sku, product] as const)),
+      stagedBySource: new Map(staged.map((row) => [row.source_id, row] as const)),
+    };
+  }
+
+  private existsInLookup(item: any, known: PageLookup) {
+    const { sku, sourceId } = this.itemKeys(item);
+    return Boolean((sku && known.productsBySku.has(sku)) || (sourceId && known.stagedBySource.has(sourceId)));
+  }
+
+  getStatus(): SyncStatus {
+    return { ...this.status, running: Boolean(this.inFlight) };
+  }
+
+  /**
+   * Lanza la sincronización sin bloquear la respuesta. Nunca hay dos en curso
+   * dentro del proceso y se respeta un intervalo mínimo entre ejecuciones.
+   */
+  triggerStagedSync(options: SyncOptions = {}): { started: boolean; reason?: string } {
+    if (!this.syncOnReadEnabled() || !this.upstreamBase()) return { started: false, reason: 'disabled' };
+    if (this.inFlight) return { started: false, reason: 'running' };
+    const minIntervalMs = Math.max(0, Number(process.env.UPSTREAM_SYNC_MIN_INTERVAL_MS ?? 60000) || 0);
+    const last = this.status.finishedAt ? Date.parse(this.status.finishedAt) : 0;
+    if (last && Date.now() - last < minIntervalMs) return { started: false, reason: 'recent' };
+    void this.syncStaged(options).catch(() => undefined);
+    return { started: true };
+  }
+
+  async sync(kind: UpstreamKind, options: SyncOptions = {}): Promise<any> {
+    if (kind === 'staged') {
+      if (this.inFlight) {
+        // Una sincronización simple en curso no cubre las búsquedas extra (pawn):
+        // se espera a que termine y luego se ejecuta la pedida.
+        if (options.includeExtraSearches && !this.inFlightExtra) {
+          await this.inFlight.catch(() => undefined);
+          return this.sync(kind, options);
+        }
+        return this.inFlight;
+      }
+      const startedAt = new Date();
+      this.inFlightExtra = Boolean(options.includeExtraSearches);
+      this.inFlight = this.runSync(kind, options)
+        .then((result: any) => {
+          this.status = {
+            lastResult: result,
+            startedAt: startedAt.toISOString(),
+            finishedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt.getTime(),
+            lastError: result?.ok === false ? String(result?.reason || 'failed') : null,
+          };
+          return result;
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.error(`staged sync failed: ${message}`);
+          this.status = {
+            lastResult: null,
+            startedAt: startedAt.toISOString(),
+            finishedAt: new Date().toISOString(),
+            durationMs: Date.now() - startedAt.getTime(),
+            lastError: message,
+          };
+          return { ok: false, reason: 'error' };
+        })
+        .finally(() => {
+          this.inFlight = null;
+          this.inFlightExtra = false;
+        });
+      return this.inFlight;
+    }
+    return this.runSync(kind, options);
+  }
+
+  private async runSync(kind: UpstreamKind, options: SyncOptions = {}) {
     if (!this.syncOnReadEnabled()) return { ok: false, reason: 'disabled' };
     const pageSize = Math.max(1, Number(process.env.UPSTREAM_SYNC_PAGE_SIZE || 100) || 100);
     const maxPages = Math.max(1, Number(process.env.UPSTREAM_SYNC_MAX_PAGES || 100) || 100);
@@ -728,10 +842,11 @@ export class PullSyncService {
         termTotal = meta.total ?? termTotal;
 
         let pageCount = 0;
+        const known = await this.lookupPage(items);
         for (const it of items) {
           try {
-            const alreadyExists = await this.existsInLocalDb(it);
-            await this.upsertFromItem(it);
+            const alreadyExists = this.existsInLookup(it, known);
+            await this.upsertFromItem(it, known);
             pageCount += 1;
             consecutiveExisting = alreadyExists ? consecutiveExisting + 1 : 0;
             if (consecutiveExisting >= existingCutoff) {

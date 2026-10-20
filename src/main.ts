@@ -57,6 +57,10 @@ async function bootstrap() {
   await app.listen(port);
   // eslint-disable-next-line no-console
   console.log(`API listening on http://localhost:${port}`);
+  if (process.env.NODE_ENV === 'production' && !String(process.env.LOGIN_PROXY_SECRET || '').trim()) {
+    // eslint-disable-next-line no-console
+    console.warn('[auth] LOGIN_PROXY_SECRET no está configurado: todos los logins vía Next comparten un único límite por IP.');
+  }
 }
 
 bootstrap();

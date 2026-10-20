@@ -5,15 +5,13 @@ import { CatalogPublic } from '../../entities/catalog-public.entity';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
 import { CatalogView } from '../../entities/catalog-view.entity';
+import { runOnce } from '../../utils/run-once';
+import { parseRowNotes, publicNotes, publicProduct, publicStaged } from '../../utils/public-catalog';
+import { applyReservedQty, reservedQtyByProduct } from '../../utils/stock-reservations';
+import { normalizeAppleTitle, normalizeColorName } from '../../utils/display-names';
+import { AVAILABILITY_LABEL, PublicAvailability, familyKey, isSellable, publicAvailability } from '../../utils/catalog-family';
 
-function normalizeVariantKey(value: unknown) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}+/gu, '')
-    .replace(/\s+/g, ' ');
-}
+type HydratedRow = { pub: CatalogPublic; product?: CatalogProduct; staged?: StagedProduct; availability: PublicAvailability };
 
 function publicCategoryGroup(value: unknown) {
   const category = String(value || '').trim().toLowerCase();
@@ -29,109 +27,73 @@ export class CatalogController {
     @InjectRepository(CatalogView) private viewRepo: Repository<CatalogView>,
   ) {}
 
+  @Get('client-purchases')
+  async clientPurchases() {
+    // Only publish the photo and the purchased product; customer details stay private.
+    const sales = await this.productRepo.manager.query(`
+      SELECT sr.id::text, sr.client_photo_url AS "photoUrl",
+        COALESCE(NULLIF(BTRIM(sr.product_title), ''), p.title) AS "productTitle",
+        COALESCE(NULLIF(BTRIM(to_jsonb(sr)->>'product_image_url'), ''), cp.images->>0) AS "productImageUrl",
+        cp.category AS "category",
+        sr.sold_at AS "purchasedAt"
+      FROM sold_records sr
+      LEFT JOIN products p ON p.id = sr.product_id
+      -- La categoría y la foto del equipo viven en la ficha pública (products no tiene category).
+      LEFT JOIN catalog_public cp ON cp.product_id = sr.product_id
+      WHERE NULLIF(BTRIM(sr.client_photo_url), '') IS NOT NULL
+        -- to_jsonb: la columna puede no existir aún si el panel no se abrió tras desplegar.
+        AND COALESCE((to_jsonb(sr)->>'client_photo_public')::boolean, true)
+        AND COALESCE(NULLIF(BTRIM(sr.product_title), ''), p.title) IS NOT NULL
+      ORDER BY sr.sold_at DESC, sr.created_at DESC
+      LIMIT 24
+    `).catch((error: { code?: string }) => {
+      if (error.code === '42P01' || error.code === '42703') return [];
+      throw error;
+    });
+    const clients = await this.productRepo.manager.query(`
+      SELECT id::text, client_photo_url AS "photoUrl", product_title AS "productTitle",
+        NULLIF(BTRIM(to_jsonb(possible_clients)->>'product_image_url'), '') AS "productImageUrl",
+        NULL::text AS "category",
+        purchased_at AS "purchasedAt"
+      FROM possible_clients
+      WHERE status = 'purchased' AND sale_id IS NULL
+        AND NULLIF(BTRIM(client_photo_url), '') IS NOT NULL
+        AND NULLIF(BTRIM(product_title), '') IS NOT NULL
+      ORDER BY purchased_at DESC NULLS LAST, created_at DESC
+      LIMIT 24
+    `).catch((error: { code?: string }) => {
+      if (error.code === '42P01' || error.code === '42703') return [];
+      throw error;
+    });
+    const items = [...sales, ...clients]
+      .sort((a, b) => new Date(b.purchasedAt).getTime() - new Date(a.purchasedAt).getTime())
+      .slice(0, 24)
+      // Solo la foto y el equipo comprado: nunca nombre, teléfono ni precio pagado.
+      .map(({ id, photoUrl, productTitle, productImageUrl, category, purchasedAt }) => ({
+        id,
+        photoUrl,
+        productTitle,
+        productImageUrl: productImageUrl || null,
+        category: category ? publicCategoryGroup(category) : null,
+        purchasedMonth: purchasedAt ? new Date(purchasedAt).toISOString().slice(0, 7) : null,
+      }));
+    return { items };
+  }
+
   private parseNotes(row: any) {
-    try {
-      return row?.notes && typeof row.notes === 'string' ? JSON.parse(row.notes) : row?.notes || {};
-    } catch {
-      return {};
-    }
+    return parseRowNotes(row);
   }
 
   private publicNotes(staged: StagedProduct | null) {
-    const notes = this.parseNotes(staged);
-    const specs = notes?.specs || {};
-    const sourceDetail = specs?.detalle || notes?.detalle || {};
-    const detailKeys = [
-      'gama', 'procesador', 'generacion', 'numero', 'modelo',
-      'tamaño', 'tamanio', 'tamano', 'almacenamiento', 'ram',
-      'conexion', 'conectividad', 'esim', 'sim', 'descripcionOtro',
-      'detalles', 'productDetails', 'detailImages',
-    ];
-    const detail = Object.fromEntries(
-      detailKeys
-        .filter((key) => sourceDetail?.[key] !== undefined)
-        .map((key) => [key, sourceDetail[key]]),
-    );
-    const publicKeys = [
-      'saleType', 'discount', 'discountMode', 'discountType', 'finalPrice',
-      'precioLista', 'descuentoPorc', 'color', 'batteryHealth', 'batteryCycles',
-      'bateria', 'iphoneModel', 'iphoneNumber', 'storageGb', 'storage',
-      'iphoneSimType', 'simType', 'chipType', 'preventaDateFrom', 'preventaDateTo',
-      'preventa', 'warrantyDate', 'warrantyEnabled', 'warrantyType', 'garantiaFecha', 'garantia',
-      'garantiaActiva', 'garantiaTipo', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
-      'watchConnection', 'watchAccessories', 'watchIncludes', 'productCondition',
-      'watchSize', 'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
-      'cuboFake', 'cableFake',
-      'productDetails', 'detalles', 'detailImages', 'detailPhotos',
-    ];
-    const result = Object.fromEntries(
-      publicKeys
-        .filter((key) => notes?.[key] !== undefined)
-        .map((key) => [key, notes[key]]),
-    ) as any;
-    result.detalle = detail;
-    result.specs = {
-      tipo: specs?.tipo ?? null,
-      estado: specs?.estado ?? notes?.estado ?? null,
-      sim: specs?.sim ?? detail?.sim ?? detail?.esim ?? null,
-      conCaja: specs?.conCaja ?? null,
-      detalle: detail,
-    };
-    return result;
+    return publicNotes(staged);
   }
 
   private publicProduct(product: CatalogProduct | null) {
-    if (!product) return null;
-    return {
-      id: product.id,
-      sku: product.sku,
-      title: product.title,
-      price: product.price,
-      iphone_model: product.iphone_model,
-      iphone_number: product.iphone_number,
-      storage_gb: product.storage_gb,
-      battery_cycles: product.battery_cycles,
-      battery_health: product.battery_health,
-      color: product.color,
-      includes: product.includes,
-      includes_extra: product.includes_extra,
-      keyboard_layout: product.keyboard_layout,
-      sale_type: product.sale_type,
-      discount: product.discount,
-      final_price: product.final_price,
-      min_offer_price: product.min_offer_price,
-      status: product.status,
-      product_condition: product.product_condition,
-      stock: product.stock,
-    };
+    return publicProduct(product);
   }
 
   private publicStaged(staged: StagedProduct | null) {
-    if (!staged) return null;
-    return {
-      sku: staged.sku,
-      title: staged.title,
-      price: staged.price,
-      iphone_model: staged.iphone_model,
-      iphone_number: staged.iphone_number,
-      storage_gb: staged.storage_gb,
-      battery_cycles: staged.battery_cycles,
-      battery_health: staged.battery_health,
-      color: staged.color,
-      includes: staged.includes,
-      includes_extra: staged.includes_extra,
-      keyboard_layout: staged.keyboard_layout,
-      sale_type: staged.sale_type,
-      discount: staged.discount,
-      final_price: staged.final_price,
-      min_offer_price: staged.min_offer_price,
-      stock: staged.stock,
-      status: staged.status,
-      product_condition: staged.product_condition,
-      category: staged.category,
-      images: staged.images,
-      notes: this.publicNotes(staged),
-    };
+    return publicStaged(staged);
   }
 
   private priceMeta(product: CatalogProduct | undefined, staged: StagedProduct | undefined) {
@@ -180,7 +142,7 @@ export class CatalogController {
     return { condition, saleType, price: isFinite(price) ? price : 0, compareAt, discount, discountMode, promoLabel };
   }
 
-  private compactRow(pub: CatalogPublic, product: CatalogProduct | undefined, staged: StagedProduct | undefined) {
+  private compactRow(pub: CatalogPublic, product: CatalogProduct | undefined, staged: StagedProduct | undefined, availabilityOverride?: PublicAvailability) {
     const img = (Array.isArray(pub.images) && pub.images[0]) || (Array.isArray(staged?.images) && staged?.images[0]) || '/placeholder.svg';
     const { condition, saleType, price, compareAt, discount, discountMode, promoLabel } = this.priceMeta(product, staged);
     const notes = this.parseNotes(staged);
@@ -191,18 +153,19 @@ export class CatalogController {
       ...(Array.isArray(detail?.detailImages) ? detail.detailImages : []),
     ].map((value) => String(value || '').trim()).filter(Boolean)));
     const conditionDescription = String(detail?.detalles || detail?.productDetails || notes?.productDetails || notes?.detalles || '').trim();
-    const stock = Number(product?.stock ?? staged?.stock ?? 1);
-    const sold = product?.status === 'sold';
-    const outOfStock = !sold && Number.isFinite(stock) && stock <= 0;
-    const available = Boolean(pub.is_published) && !sold && !outOfStock;
+    const stock = Number(product?.stock ?? staged?.stock ?? 0);
+    // Sin el dato de reservas (pruebas o llamadas sueltas) se calcula con el stock recibido.
+    const availability = availabilityOverride || publicAvailability(product, staged, 0, saleType);
+    const available = Boolean(pub.is_published) && isSellable(availability);
     const batteryHealth = product?.battery_health ?? staged?.battery_health ?? notes?.batteryHealth ?? notes?.bateria?.salud ?? null;
     const includesValue = product?.includes || staged?.includes || notes?.includes || '';
     const includesExtra = product?.includes_extra || staged?.includes_extra || notes?.includesExtra || '';
     const includesDisplay = includesValue && includesValue !== 'Ninguno'
       ? (includesValue === 'Otros' ? includesExtra : includesValue)
       : '';
+    const colorName = normalizeColorName(product?.color || staged?.color || notes?.color || '');
     const variantLabel = [
-      product?.color || staged?.color || notes?.color || '',
+      colorName,
       batteryHealth ? `${batteryHealth}% bateria` : '',
       includesDisplay,
     ].filter(Boolean).join(' · ');
@@ -213,7 +176,7 @@ export class CatalogController {
       category: publicCategoryGroup(pub.category),
       image: img,
       images: Array.isArray(pub.images) ? pub.images : [],
-      title: product?.title || staged?.title || pub.slug,
+      title: normalizeAppleTitle(product?.title || staged?.title || pub.slug),
       condition,
       saleType,
       discount,
@@ -222,12 +185,13 @@ export class CatalogController {
       price,
       compareAt,
       status: product?.status || null,
-      stock: Number.isFinite(stock) ? stock : 1,
+      stock: Number.isFinite(stock) ? stock : 0,
       available,
-      availabilityLabel: sold ? 'Vendido' : outOfStock ? 'Agotado' : 'Disponible',
+      availability,
+      availabilityLabel: AVAILABILITY_LABEL[availability],
       variantGroup: product?.variant_group || staged?.variant_group || notes?.variantGroup || notes?.variant_group || null,
       variantLabel,
-      color: product?.color || staged?.color || notes?.color || null,
+      color: colorName || null,
       batteryHealth,
       batteryCycles: product?.battery_cycles ?? staged?.battery_cycles ?? notes?.batteryCycles ?? notes?.bateria?.ciclos ?? null,
       processor: detail?.procesador || null,
@@ -239,102 +203,70 @@ export class CatalogController {
     };
   }
 
-  private async publicRowsForProductIds(productIds: string[]) {
-    const ids = Array.from(new Set(productIds.map((id) => String(id || '').trim()).filter(Boolean)));
-    if (!ids.length) return [] as CatalogPublic[];
-    return this.publicRepo.find({
-      where: { product_id: In(ids), is_published: true as any },
-      order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
-      take: 40,
-    });
-  }
-
-  private async productIdsFromStaged(stagedRows: StagedProduct[]) {
-    const ids = new Set<string>();
-    for (const row of stagedRows) {
-      if (row.source_id) ids.add(row.source_id);
-    }
-
-    const skus = Array.from(new Set(stagedRows.map((row) => String(row.sku || '').trim()).filter(Boolean)));
-    if (skus.length) {
-      const products = await this.productRepo.find({
-        where: { sku: In(skus) },
-        take: skus.length,
-      });
-      for (const product of products) ids.add(product.id);
-    }
-
-    return ids;
-  }
-
-  private async findVariantPubs(params: { variantGroup?: string; title?: string }) {
-    const byId = new Map<string, CatalogPublic>();
-    const addPubs = (pubs: CatalogPublic[]) => {
-      for (const row of pubs) byId.set(row.id, row);
-    };
-
-    const variantGroup = String(params.variantGroup || '').trim();
-    if (variantGroup) {
-      const [groupProducts, groupStaged] = await Promise.all([
-        this.productRepo.find({ where: { variant_group: variantGroup as any }, take: 40 }),
-        this.stagedRepo.find({ where: { variant_group: variantGroup as any }, take: 40 }),
-      ]);
-      const ids = new Set(groupProducts.map((product) => product.id));
-      for (const id of await this.productIdsFromStaged(groupStaged)) ids.add(id);
-      addPubs(await this.publicRowsForProductIds(Array.from(ids)));
-    }
-
-    const title = String(params.title || '').trim();
-    if (title) {
-      const [titleProducts, titleStaged] = await Promise.all([
-        this.productRepo.find({ where: { title }, take: 40 }),
-        this.stagedRepo.find({ where: { title }, take: 40 }),
-      ]);
-      const ids = new Set(titleProducts.map((product) => product.id));
-      for (const id of await this.productIdsFromStaged(titleStaged)) ids.add(id);
-      addPubs(await this.publicRowsForProductIds(Array.from(ids)));
-    }
-
-    return Array.from(byId.values());
-  }
-
-  private async hydratePublicRows(pubs: CatalogPublic[]) {
-    const productIds = pubs.map((pub) => pub.product_id);
-    const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
+  /**
+   * Producto, reservas vigentes y ficha staged de cada publicación. Las cuatro
+   * lecturas solo dependen de los ids de producto, así que van en paralelo: una
+   * ida a la base en lugar de varias en serie (~85 ms cada una hasta Neon).
+   * La ficha se vincula por el SKU del producto y, si no hay, por source_id.
+   */
+  private async hydratePublicRows(pubs: CatalogPublic[], preferSourceIds: string[] = []): Promise<HydratedRow[]> {
+    const productIds = Array.from(new Set(pubs.map((pub) => pub.product_id).filter(Boolean)));
+    const [products, reserved, stagedBySku, stagedByPid] = productIds.length
+      ? await Promise.all([
+          this.productRepo.findBy({ id: In(productIds) }),
+          reservedQtyByProduct(this.productRepo.manager, productIds),
+          this.stagedRepo
+            .createQueryBuilder('staged')
+            .where(
+              `staged.sku IN (SELECT product.sku FROM products product WHERE product.id IN (:...productIds) AND product.sku IS NOT NULL AND product.sku <> '')`,
+              { productIds },
+            )
+            .getMany(),
+          this.stagedRepo.findBy({ source_id: In(productIds) }),
+        ])
+      : ([[], new Map<string, number>(), [], []] as [CatalogProduct[], Map<string, number>, StagedProduct[], StagedProduct[]]);
+    // Stock real antes de descontar reservas: distingue «reservado» de «vendido».
+    const rawStock = new Map(products.map((product) => [product.id, product.stock] as const));
+    applyReservedQty(products, reserved);
     const productById = new Map(products.map((product) => [product.id, product] as const));
 
-    const skus = Array.from(new Set(products.map((product) => String(product.sku || '').trim()).filter(Boolean)));
-    const [stagedBySku, stagedByPid] = await Promise.all([
-      skus.length ? this.stagedRepo.findBy({ sku: In(skus) }) : Promise.resolve([] as StagedProduct[]),
-      productIds.length ? this.stagedRepo.findBy({ source_id: In(productIds) }) : Promise.resolve([] as StagedProduct[]),
-    ]);
     const stagedBySkuMap = new Map(stagedBySku.map((row) => [row.sku, row] as const));
     const stagedByPidMap = new Map(stagedByPid.map((row) => [row.source_id, row] as const));
 
     return pubs.map((pub) => {
       const product = productById.get(pub.product_id);
-      const staged = product?.sku ? (stagedBySkuMap.get(product.sku) || stagedByPidMap.get(pub.product_id)) : stagedByPidMap.get(pub.product_id);
-      return { pub, product, staged };
+      const bySource = stagedByPidMap.get(pub.product_id);
+      const bySku = product?.sku ? stagedBySkuMap.get(product.sku) : undefined;
+      const staged = preferSourceIds.includes(pub.product_id) ? bySource || bySku : bySku || bySource;
+      const availability = publicAvailability(
+        product ? { status: product.status, stock: rawStock.get(product.id), sale_type: product.sale_type } : undefined,
+        staged,
+        reserved.get(pub.product_id) || 0,
+        this.priceMeta(product, staged).saleType,
+      );
+      return { pub, product, staged, availability };
     });
   }
 
-  private async ensureCatalogViewsTable() {
-    await this.viewRepo.manager.query(`
-      CREATE TABLE IF NOT EXISTS catalog_views (
-        id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-        product_id uuid NOT NULL,
-        product_slug text NOT NULL,
-        product_title text NULL,
-        category text NULL,
-        session_id text NOT NULL,
-        path text NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_product_id ON catalog_views(product_id)`);
-    await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_category ON catalog_views(category)`);
-    await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_created_at ON catalog_views(created_at DESC)`);
-    await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_session_id ON catalog_views(session_id)`);
+  private ensureCatalogViewsTable() {
+    return runOnce('catalog:catalog_views', async () => {
+      await this.viewRepo.manager.query(`
+        CREATE TABLE IF NOT EXISTS catalog_views (
+          id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+          product_id uuid NOT NULL,
+          product_slug text NOT NULL,
+          product_title text NULL,
+          category text NULL,
+          session_id text NOT NULL,
+          path text NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        )
+      `);
+      await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_product_id ON catalog_views(product_id)`);
+      await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_category ON catalog_views(category)`);
+      await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_created_at ON catalog_views(created_at DESC)`);
+      await this.viewRepo.manager.query(`CREATE INDEX IF NOT EXISTS idx_catalog_views_session_id ON catalog_views(session_id)`);
+    });
   }
 
   @Get()
@@ -347,33 +279,25 @@ export class CatalogController {
     }
     const order = { sort_order: 'ASC' as any, created_at: 'DESC' as any };
     const pubs = await this.publicRepo.find({ where, order });
-    const productIds = pubs.map((p) => p.product_id);
-    const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
-    const pMap = new Map(products.map((p) => [p.id, p] as const));
-    // Preferir vincular staged por SKU del producto.
-    const skus = products.map((p) => p.sku).filter(Boolean);
-    const stagedBySku = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
-    const sBySku = new Map(stagedBySku.map((s) => [s.sku, s] as const));
-    // Fallback: referencias antiguas por source_id.
-    const stagedByPid = productIds.length ? await this.stagedRepo.findBy({ source_id: In(productIds) }) : [];
-    const sByPid = new Map(stagedByPid.map((s) => [s.source_id, s] as const));
+    // Stock disponible = stock - reservas vigentes de solicitudes.
+    const rows = await this.hydratePublicRows(pubs);
 
-    const items = pubs
-      .map((p) => {
-        const product = pMap.get(p.product_id);
-        const staged = product ? (sBySku.get(product.sku) || sByPid.get(p.product_id)) : sByPid.get(p.product_id);
+    const items = rows
+      // Solo unidades que se pueden solicitar: sin vendidas, agotadas ni reservadas.
+      .filter((row) => isSellable(row.availability))
+      .map(({ pub: p, product, staged, availability }) => {
         return {
           id: p.id,
           product_id: p.product_id,
           slug: p.slug,
           category: publicCategoryGroup(p.category),
+          createdAt: p.created_at,
           images: Array.isArray(p.images) ? p.images : [],
           product: this.publicProduct(product || null),
           staged: this.publicStaged(staged || null),
+          availability,
         };
       })
-      // Ocultar productos vendidos del catálogo público.
-      .filter((row) => row.product?.status !== 'sold')
       .filter((row) => (q ? String(row.product?.title || '').toLowerCase().includes(String(q).toLowerCase()) : true));
     return { items };
   }
@@ -384,22 +308,8 @@ export class CatalogController {
       where: { is_published: true },
       order: { sort_order: 'ASC' as any, created_at: 'DESC' as any },
     });
-    const productIds = pubs.map((p) => p.product_id);
-    const products = productIds.length ? await this.productRepo.findBy({ id: In(productIds) }) : [];
-    const pMap = new Map(products.map((p) => [p.id, p] as const));
-    const skus = products.map((p) => p.sku).filter(Boolean);
-    const stagedBySku = skus.length ? await this.stagedRepo.findBy({ sku: In(skus) }) : [];
-    const sBySku = new Map(stagedBySku.map((s) => [s.sku, s] as const));
-    const stagedByPid = productIds.length ? await this.stagedRepo.findBy({ source_id: In(productIds) }) : [];
-    const sByPid = new Map(stagedByPid.map((s) => [s.source_id, s] as const));
-
-    const rows = pubs
-      .map((pub) => {
-        const product = pMap.get(pub.product_id);
-        const staged = product ? (sBySku.get(product.sku) || sByPid.get(pub.product_id)) : sByPid.get(pub.product_id);
-        return { pub, product, staged };
-      })
-      .filter((row) => row.product?.status !== 'sold');
+    // Stock disponible = stock - reservas vigentes de solicitudes.
+    const rows = (await this.hydratePublicRows(pubs)).filter((row) => isSellable(row.availability));
 
     const categories = new Map<string, { key: string; total: number; minPrice: number | null }>();
     for (const row of rows) {
@@ -408,19 +318,70 @@ export class CatalogController {
       const current = categories.get(key) || { key, total: 0, minPrice: null };
       const price = this.priceMeta(row.product, row.staged).price;
       current.total += 1;
-      if (price > 0 && (current.minPrice === null || price < current.minPrice)) current.minPrice = price;
+      if (price > 0 && Number(row.product?.stock ?? row.staged?.stock ?? 0) > 0 && (current.minPrice === null || price < current.minPrice)) current.minPrice = price;
       categories.set(key, current);
     }
 
-    const bestRows = [...rows].sort((a, b) => {
+    const bestRows = rows.filter((row) => Number(row.product?.stock ?? row.staged?.stock ?? 0) > 0).sort((a, b) => {
       const aTime = new Date(a.pub.created_at || 0).getTime() || 0;
       const bTime = new Date(b.pub.created_at || 0).getTime() || 0;
       return bTime - aTime;
     });
 
-    const items = bestRows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged));
+    const items = bestRows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged, row.availability));
+    const featured = bestRows
+      .filter((row) => this.priceMeta(row.product, row.staged).saleType !== 'PREVENTA')
+      .slice(0, 4)
+      .map((row) => this.compactRow(row.pub, row.product, row.staged, row.availability));
 
-    return { items, categories: Array.from(categories.values()) };
+    // Promociones reales (precio rebajado sobre un precio anterior) para las campañas de la portada.
+    const promotions = bestRows
+      .map((row) => ({ row, meta: this.priceMeta(row.product, row.staged) }))
+      .filter(({ meta }) => meta.saleType === 'PROMOCION' && meta.price > 0 && Number(meta.compareAt) > meta.price)
+      .slice(0, 6)
+      .map(({ row }) => this.compactRow(row.pub, row.product, row.staged, row.availability));
+
+    const sellableRows = rows.filter((row) => Number(row.product?.stock ?? row.staged?.stock ?? 0) > 0 && this.priceMeta(row.product, row.staged).price > 0);
+    const budgetBands = [
+      { key: 'macbook-entry', category: 'macbook', label: 'MacBook hasta S/ 2,500', max: 2500 },
+      { key: 'macbook-mid', category: 'macbook', label: 'MacBook de S/ 2,500 a S/ 4,000', min: 2500, max: 4000 },
+      { key: 'iphone-entry', category: 'iphone', label: 'iPhone hasta S/ 2,000', max: 2000 },
+      { key: 'premium', category: '', label: 'Equipos desde S/ 4,000', min: 4000 },
+    ];
+    const budgets = budgetBands.map((band) => ({
+      ...band,
+      count: sellableRows.filter((row) => {
+        if (band.category && publicCategoryGroup(row.pub.category) !== band.category) return false;
+        const totalWithIgv = this.priceMeta(row.product, row.staged).price * 1.18;
+        return (band.min === undefined || totalWithIgv >= band.min) && (band.max === undefined || totalWithIgv <= band.max);
+      }).length,
+    })).filter((band) => band.count > 0);
+
+    return { items, featured, promotions, categories: Array.from(categories.values()), budgets };
+  }
+
+  // Comparación: una lectura de publicaciones y una hidratación en lote,
+  // sin galerías completas ni consultas de variantes por cada equipo.
+  @Get('compare')
+  async compare(@Query('items') raw = '') {
+    const slugs = Array.from(new Set(String(raw).split(',').map(value => value.trim()).filter(value => value && value.length <= 200))).slice(0, 3);
+    if (!slugs.length) return { items: [] };
+    const pubs = await this.publicRepo.find({ where: { is_published: true, slug: In(slugs) } });
+    const hydrated = await this.hydratePublicRows(pubs, pubs.map(pub => pub.product_id));
+    const bySlug = new Map(hydrated.map(row => [row.pub.slug, row]));
+    return { items: slugs.flatMap(slug => {
+      const row = bySlug.get(slug);
+      if (!row) return [];
+      const staged = this.publicStaged(row.staged || null);
+      // Solo datos públicos. Los detalles estéticos se comparan por su texto;
+      // las fotos completas se consultan en la ficha.
+      const notes = staged?.notes ? { ...staged.notes, detailImages: undefined, detailPhotos: undefined } : {};
+      if (notes.detalle) notes.detalle = { ...notes.detalle, detailImages: undefined };
+      if (notes.specs?.detalle) notes.specs = { ...notes.specs, detalle: { ...notes.specs.detalle, detailImages: undefined } };
+      return [{ slug, category: publicCategoryGroup(row.pub.category), images: [row.pub.images?.[0] || row.staged?.images?.[0] || '/placeholder.svg'],
+        product: this.publicProduct(row.product || null), staged: staged ? { ...staged, images: undefined, notes } : null,
+        availability: row.availability, availabilityLabel: AVAILABILITY_LABEL[row.availability] }];
+    }) };
   }
 
   @Get(':slug')
@@ -441,46 +402,31 @@ export class CatalogController {
       }
     }
     if (!pub) throw new NotFoundException('not found');
-    const [product, stagedBySource] = await Promise.all([
-      this.productRepo.findOne({ where: { id: pub.product_id } }),
-      this.stagedRepo.findOne({ where: { source_id: pub.product_id } }),
-    ]);
-    let staged: StagedProduct | null = stagedBySource;
-    if (!staged && product?.sku) staged = await this.stagedRepo.findOne({ where: { sku: product.sku } });
-    const notes = this.parseNotes(staged);
-    const variantGroup = String(product?.variant_group || staged?.variant_group || notes?.variantGroup || notes?.variant_group || '').trim();
+    // La misma lectura alimenta la unidad y sus variantes: antes la unidad
+    // se hidrataba dos veces y se repetían producto, staged y reservas.
+    const category = publicCategoryGroup(pub.category);
+    const where: any = { is_published: true };
+    if (category === 'otros') where.category = Not(In(['macbook', 'ipad', 'iphone', 'watch']));
+    else where.category = pub.category;
+    const siblings = await this.hydratePublicRows(await this.publicRepo.find({ where, order: { sort_order: 'ASC' as any, created_at: 'DESC' as any } }), [pub.product_id]);
+    const own = siblings.find(row => row.pub.id === pub!.id);
+    if (!own) throw new NotFoundException('not found');
+    const product = own.product || null, staged = own.staged || null, availability = own.availability;
+
+    // Otras unidades del mismo modelo: misma categoría y misma clave de familia
+    // (ver utils/catalog-family). Solo unidades que se pueden solicitar, más la
+    // actual. Una sola lectura de la categoría, hidratada en lote (sin N+1).
+    const ownKey = familyKey(category, product, staged);
     let variants: any[] = [];
-    const activeTitleKey = normalizeVariantKey(product?.title || staged?.title || '');
-    const activeCategoryKey = normalizeVariantKey(pub.category || staged?.category || '');
-    const activeGroupKey = normalizeVariantKey(variantGroup);
-
-    const variantPubs = await this.findVariantPubs({
-      variantGroup,
-      title: product?.title || staged?.title || '',
-    });
-    const variantRows = await this.hydratePublicRows(variantPubs);
-
-    variants = variantRows
-      .map(({ pub: variantPub, product: variantProduct, staged: variantStaged }) => {
-        const variantNotes = this.parseNotes(variantStaged);
-        const rowGroup = String(
-          variantProduct?.variant_group ||
-            variantStaged?.variant_group ||
-            variantNotes?.variantGroup ||
-            variantNotes?.variant_group ||
-            ''
-        ).trim();
-        const sameExplicitGroup = activeGroupKey && normalizeVariantKey(rowGroup) === activeGroupKey;
-        const sameTitle =
-          !activeGroupKey &&
-          activeTitleKey &&
-          normalizeVariantKey(variantProduct?.title || variantStaged?.title || '') === activeTitleKey &&
-          normalizeVariantKey(variantPub.category || variantStaged?.category || '') === activeCategoryKey;
-        if (!sameExplicitGroup && !sameTitle) return null;
-        return this.compactRow(variantPub, variantProduct, variantStaged);
-      })
-      .filter(Boolean)
-      .sort((a: any, b: any) => String(a.variantLabel || a.title).localeCompare(String(b.variantLabel || b.title)));
+    if (ownKey) {
+      variants = siblings
+        .filter((row) => row.pub.id === pub.id || isSellable(row.availability))
+        .filter((row) => familyKey(category, row.product, row.staged) === ownKey)
+        .map((row) => this.compactRow(row.pub, row.product, row.staged, row.pub.id === pub.id ? availability : row.availability))
+        .sort((a: any, b: any) => Number(a.price || 0) - Number(b.price || 0) || String(a.slug).localeCompare(String(b.slug)));
+    }
+    // Una sola unidad (la actual) no es una elección: no se envía lista.
+    if (variants.length < 2) variants = [];
 
     return {
       item: {
@@ -491,6 +437,9 @@ export class CatalogController {
         images: pub.images,
         product: this.publicProduct(product),
         staged: this.publicStaged(staged),
+        availability,
+        availabilityLabel: AVAILABILITY_LABEL[availability],
+        familyKey: ownKey || null,
         variants,
       },
     };

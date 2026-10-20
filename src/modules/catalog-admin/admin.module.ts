@@ -8,9 +8,10 @@ import { AdminController } from './admin.controller';
 import { AuthModule } from '../auth/auth.module';
 import { SyncModule } from '../sync/sync.module';
 import { SalesSyncService } from './sales-sync.service';
+import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
 
 @Module({
-  imports: [AuthModule, TypeOrmModule.forFeature([StagedProduct, CatalogPublic, CatalogProduct, CatalogView]), SyncModule],
+  imports: [AuthModule, TypeOrmModule.forFeature([StagedProduct, CatalogPublic, CatalogProduct, CatalogView]), SyncModule, PurchaseRequestsModule],
   controllers: [AdminController],
   providers: [SalesSyncService],
 })

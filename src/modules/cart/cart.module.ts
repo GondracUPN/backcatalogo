@@ -7,9 +7,11 @@ import { StagedProduct } from '../../entities/staged-product.entity';
 import { CartController } from './cart.controller';
 import { OfferAttempt } from '../../entities/offer-attempt.entity';
 import { OffersController } from './offers.controller';
+import { DeliveryModule } from '../delivery/delivery.module';
+import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([CartItem, CatalogProduct, CatalogPublic, StagedProduct, OfferAttempt])],
+  imports: [TypeOrmModule.forFeature([CartItem, CatalogProduct, CatalogPublic, StagedProduct, OfferAttempt]), DeliveryModule, PurchaseRequestsModule],
   controllers: [CartController, OffersController],
 })
 export class CartModule {}
