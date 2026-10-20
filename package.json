@@ -6,12 +6,19 @@
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "start": "node dist/main.js",
     "build": "npm install --include=dev --no-audit --no-fund && tsc -p tsconfig.json",
-    "migration:run": "ts-node ./node_modules/typeorm/cli.js migration:run -d src/data-source.ts",
+    "migration:run": "ts-node src/scripts/check-catalog-db.ts && ts-node ./node_modules/typeorm/cli.js migration:run -d src/data-source.ts",
     "migration:revert": "ts-node ./node_modules/typeorm/cli.js migration:revert -d src/data-source.ts",
     "migration:generate": "ts-node ./node_modules/typeorm/cli.js migration:generate -d src/data-source.ts src/migrations/Auto",
     "seed": "ts-node src/seed.ts",
     "test:catalog-p1": "ts-node src/tests/catalog-p1.test.ts",
-    "test:smoke": "ts-node src/tests/validate-product.test.ts && ts-node src/tests/catalog-p1.test.ts"
+    "test:availability": "ts-node src/tests/catalog-availability.test.ts",
+    "test:smoke": "ts-node src/tests/validate-product.test.ts && ts-node src/tests/catalog-p1.test.ts && ts-node src/tests/perf-security.test.ts && npm run test:modules",
+    "test:perf-security": "ts-node src/tests/perf-security.test.ts",
+    "test:security-phase1": "ts-node src/tests/security-phase1.test.ts",
+    "test:security-postgres": "ts-node src/tests/security-postgres.test.ts",
+    "test:db:prepare": "ts-node src/scripts/prepare-security-test.ts",
+    "db:check": "ts-node src/scripts/check-catalog-db.ts",
+    "test:modules": "ts-node src/tests/themes.test.ts && ts-node src/tests/location-matching.test.ts && ts-node src/tests/purchase-requests.test.ts && ts-node src/tests/analytics.test.ts && ts-node src/tests/promotion-edit.test.ts && ts-node src/tests/review-fixes.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

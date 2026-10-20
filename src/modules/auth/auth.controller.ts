@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Post, Put, UnauthorizedException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, Post, Put, Req, UnauthorizedException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto, RegisterDto } from '../../dtos/auth.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../../entities/user.entity';
 import * as bcrypt from 'bcryptjs';
+import { loginClientIp } from '../../utils/login-attempts';
 
 @Controller('auth')
 export class AuthController {
@@ -12,11 +13,9 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() body: LoginDto) {
+  async login(@Body() body: LoginDto, @Req() req?: Parameters<typeof loginClientIp>[0]) {
     const { username, password } = body || {};
-    // eslint-disable-next-line no-console
-    console.log(`[Auth] login attempt for user: ${username}`);
-    const user = await this.auth.validateUser(username, password);
+    const user = await this.auth.validateUser(username, password, loginClientIp(req));
     const token = this.auth.signToken({ sub: user.id, username: user.username, role: user.role, canViewServiceInventory: user.canViewServiceInventory });
     // Frontend espera roles en minúsculas ("admin", "vendedor", "cliente")
     const roleLc = String(user.role || '').toLowerCase();
@@ -53,7 +52,7 @@ export class AuthController {
     const { username, password } = body || {};
     const roleUp = String((body as any)?.role || 'CLIENTE').trim().toUpperCase();
     if (!username || !String(username).trim()) throw new BadRequestException('username required');
-    if (!password || String(password).length < 6) throw new BadRequestException('password must be at least 6 characters');
+    if (!password || String(password).length < 10) throw new BadRequestException('password must be at least 10 characters');
     if (!['ADMIN', 'VENDEDOR', 'CLIENTE'].includes(roleUp)) throw new BadRequestException('invalid role');
     const exists = await this.usersRepo.findOne({ where: { username } });
     if (exists) throw new ConflictException('username already exists');
@@ -77,7 +76,7 @@ export class AuthController {
     const password = String(body?.password || '');
     if (username.length < 3) throw new BadRequestException('username must be at least 3 characters');
     if (!['ADMIN', 'VENDEDOR', 'CLIENTE'].includes(role)) throw new BadRequestException('invalid role');
-    if (password && password.length < 6) throw new BadRequestException('password must be at least 6 characters');
+    if (password && password.length < 10) throw new BadRequestException('password must be at least 10 characters');
     const duplicate = await this.usersRepo.findOne({ where: { username } });
     if (duplicate && duplicate.id !== id) throw new ConflictException('username already exists');
     if (Number(payload.sub) === id && role !== 'ADMIN') throw new BadRequestException('you cannot remove your own admin role');

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { SyncController } from '../modules/sync/sync.controller';
+const originalSecret = process.env.CATALOG_SYNC_SECRET;
 
 async function main() {
   const productUpserts: any[] = [];
@@ -20,6 +21,7 @@ async function main() {
   const publicCatalog = { findOne: async () => null };
   const controller = new SyncController(products as any, logs as any, staged as any, publicCatalog as any);
   const originalFetch = globalThis.fetch;
+  process.env.CATALOG_SYNC_SECRET = 'test-inventory-secret';
   (globalThis as any).fetch = async () => ({ ok: true });
 
   const body = {
@@ -41,7 +43,7 @@ async function main() {
     },
   };
   try {
-    await controller.syncProduct('sync-inventory-fields-42', body);
+    await controller.syncProduct('sync-inventory-fields-42', body, 'test-inventory-secret');
   } finally {
     (globalThis as any).fetch = originalFetch;
   }
@@ -81,7 +83,7 @@ async function main() {
   );
   const protectedBody = { ...body, product: { ...body.product, id: 43, sku: 'svc-43' } };
   {
-    const protectedResult = await protectedController.syncProduct('sync-protected-43', protectedBody);
+    const protectedResult = await protectedController.syncProduct('sync-protected-43', protectedBody, 'test-inventory-secret');
     assert.equal(protectedResult.skipped, 'protected');
     assert.equal(protectedUpserts.length, 0);
 
@@ -98,7 +100,7 @@ async function main() {
       { findOne: async () => ({ status: 'listed', notes: null }) } as any,
       { findOne: async () => null } as any,
     );
-    const soldResult = await soldController.syncProduct('sync-sold-43', protectedBody);
+    const soldResult = await soldController.syncProduct('sync-sold-43', protectedBody, 'test-inventory-secret');
     assert.equal(soldResult.skipped, 'protected');
     assert.equal(soldResult.sold, true);
 
@@ -118,6 +120,7 @@ async function main() {
     const historicalResult = await historicalPublicationController.syncProduct(
       'sync-historical-publication-43',
       protectedBody,
+      'test-inventory-secret',
     );
     assert.equal(historicalResult.skipped, 'protected');
     assert.equal(historicalResult.previouslyPublished, true);
@@ -125,7 +128,10 @@ async function main() {
   console.log('sync inventory fields test passed');
 }
 
-main().catch((error) => {
+main().finally(() => {
+  if (originalSecret === undefined) delete process.env.CATALOG_SYNC_SECRET;
+  else process.env.CATALOG_SYNC_SECRET = originalSecret;
+}).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

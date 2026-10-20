@@ -68,6 +68,10 @@ export class StagedProduct {
   @Column({ type: 'text', nullable: true })
   product_condition!: string | null;
 
+  /** Presentación de la unidad: 'sellado' | 'abierto'; NULL = no especificado. */
+  @Column({ type: 'text', nullable: true })
+  presentation!: string | null;
+
   @Column({ type: 'text', nullable: true })
   category!: string | null;
 

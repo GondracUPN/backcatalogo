@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 type SaleSyncEventType = 'sale.created' | 'sale.cancelled';
@@ -139,17 +139,28 @@ export class SalesSyncService implements OnModuleInit {
   }
 
   async updateRemoteStatus(eventId: string, remoteStatus: string) {
-    await this.ensureTable();
     const allowed = new Set(['pending_confirmation', 'confirmed', 'rejected', 'pending_cancellation_confirmation', 'cancelled']);
-    if (!allowed.has(remoteStatus)) return { ok: false, status: 'invalid_status' };
-    const rows = await this.dataSource.query(
+    if (!allowed.has(remoteStatus)) throw new BadRequestException('invalid status');
+    await this.ensureTable();
+    const result = await this.dataSource.query(
       `UPDATE sale_sync_events
-          SET status = 'sent', remote_status = $2, last_error = NULL, updated_at = now()
+          SET status = 'sent', remote_status = $2, last_error = NULL,
+              updated_at = CASE WHEN remote_status IS DISTINCT FROM $2 THEN now() ELSE updated_at END
         WHERE id = $1
+          AND (remote_status IS NULL OR remote_status = $2 OR remote_status NOT IN ('confirmed', 'rejected', 'cancelled'))
+          AND ((event_type = 'sale.created' AND $2 IN ('pending_confirmation', 'confirmed', 'rejected'))
+            OR (event_type = 'sale.cancelled' AND $2 IN ('pending_cancellation_confirmation', 'cancelled', 'rejected')))
         RETURNING id`,
       [eventId, remoteStatus],
     );
-    return { ok: rows.length > 0, status: remoteStatus };
+    // TypeORM/pg devuelve [filas, cantidad] para UPDATE ... RETURNING.
+    const rows = Array.isArray(result[0]) ? result[0] : result;
+    if (!rows.length) {
+      const found = await this.dataSource.query(`SELECT id FROM sale_sync_events WHERE id = $1`, [eventId]);
+      if (!found.length) throw new NotFoundException('sync event not found');
+      throw new ConflictException('Invalid remote status transition');
+    }
+    return { ok: true, status: remoteStatus };
   }
 
   async retryPending() {

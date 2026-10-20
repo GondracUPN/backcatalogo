@@ -12,25 +12,32 @@ import { Order } from '../entities/order.entity';
 import { CartItem } from '../entities/cart-item.entity';
 import { OfferAttempt } from '../entities/offer-attempt.entity';
 import { CatalogView } from '../entities/catalog-view.entity';
+import { SiteTheme } from '../entities/site-theme.entity';
 import { SyncModule } from './sync/sync.module';
 import { AdminModule } from './catalog-admin/admin.module';
 import { OrdersModule } from './orders/orders.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { CartModule } from './cart/cart.module';
 import { MarketplaceBridgeModule } from './marketplace-bridge/marketplace-bridge.module';
+import { ThemesModule } from './themes/themes.module';
+import { DeliveryModule } from './delivery/delivery.module';
+import { PurchaseRequestsModule } from './purchase-requests/purchase-requests.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import * as dotenv from 'dotenv';
+import { databaseUrl } from '../utils/database-url';
 
 // Cargar variables de entorno antes de leer process.env en la configuración
 dotenv.config();
+const url = databaseUrl();
 
 @Module({
   imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
-      url: process.env.DATABASE_URL,
-      entities: [User, Producto, CatalogProduct, SyncLog, StagedProduct, CatalogPublic, Order, CartItem, OfferAttempt, CatalogView],
+      url,
+      entities: [User, Producto, CatalogProduct, SyncLog, StagedProduct, CatalogPublic, Order, CartItem, OfferAttempt, CatalogView, SiteTheme],
       synchronize: false,
-      ssl: process.env.DATABASE_URL?.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
+      ssl: url.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
     }),
     AuthModule,
     ProductosModule,
@@ -40,6 +47,10 @@ dotenv.config();
     CatalogModule,
     CartModule,
     MarketplaceBridgeModule,
+    ThemesModule,
+    DeliveryModule,
+    PurchaseRequestsModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}

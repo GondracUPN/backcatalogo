@@ -5,6 +5,7 @@ import { JwtPayload } from 'jsonwebtoken';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../../entities/user.entity';
+import { consumeLoginAttempt, loginBucket } from '../../utils/login-attempts';
 
 @Injectable()
 export class AuthService {
@@ -18,11 +19,17 @@ export class AuthService {
     return String(secret);
   }
 
-  async validateUser(username: string, password: string) {
+  async validateUser(username: string, password: string, ip = 'unknown') {
+    await consumeLoginAttempt(this.usersRepo.manager, username, ip);
     const user = await this.usersRepo.findOne({ where: { username } });
-    if (!user) throw new UnauthorizedException('Invalid credentials');
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid credentials');
+    // También compara para cuentas inexistentes, con el mismo coste de bcrypt.
+    const valid = await bcrypt.compare(password, user?.passwordHash || '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy');
+    if (!user || !valid) {
+      console.warn('[auth] Invalid credentials');
+      throw new UnauthorizedException('Invalid credentials');
+    }
+    await this.usersRepo.manager.query(`DELETE FROM auth_login_attempts WHERE key = $1`, [loginBucket('account', username.toLowerCase())]);
+    await this.usersRepo.manager.query(`UPDATE auth_login_attempts SET attempts = GREATEST(attempts - 1, 0) WHERE key = $1`, [loginBucket('ip', ip)]);
     return user;
   }
 

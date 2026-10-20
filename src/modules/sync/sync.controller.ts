@@ -6,6 +6,7 @@ import { SyncLog } from '../../entities/sync-log.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
 import { CatalogPublic } from '../../entities/catalog-public.entity';
 import * as crypto from 'node:crypto';
+import { requireSyncSecret } from '../../utils/shared-secret';
 
 type IncomingEvent = 'product.listed' | 'product.updated' | 'product.sold';
 
@@ -69,7 +70,13 @@ export class SyncController {
 
   @Get('exists')
   @HttpCode(200)
-  async exists(@Query('sku') sku?: string, @Query('id') id?: string) {
+  async exists(
+    @Query('sku') sku?: string,
+    @Query('id') id?: string,
+    @Headers('x-sync-secret') syncSecret?: string,
+    @Headers('authorization') authorization?: string,
+  ) {
+    requireSyncSecret({ secret: syncSecret, authorization });
     if (!sku && !id) return { exists: false };
     if (sku) {
       const normalizedSku = String(sku).trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS');
@@ -120,7 +127,10 @@ export class SyncController {
   async syncProduct(
     @Headers('x-idempotency-key') idemKey: string,
     @Body() body: any,
+    @Headers('x-sync-secret') syncSecret?: string,
+    @Headers('authorization') authorization?: string,
   ) {
+    requireSyncSecret({ secret: syncSecret, authorization });
     if (!idemKey) throw new UnauthorizedException('missing idempotency key');
 
     const exists = await this.logs.findOne({ where: { idem_key: idemKey } });
@@ -313,11 +323,15 @@ export class SyncController {
     await this.logs.save(this.logs.create({ idem_key: idemKey }));
 
     // Ask Next.js to revalidate tags
+    if (process.env.MACSO_TEST_DATABASE_URL) return { ok: true };
     const nextBase = process.env.NEXT_BASE_URL || 'http://127.0.0.1:3000';
     try {
       await fetch(`${nextBase}/api/admin/revalidate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.REVALIDATE_SECRET ? { 'x-revalidate-secret': String(process.env.REVALIDATE_SECRET) } : {}),
+        },
         body: JSON.stringify({ tags: ['catalog-products', 'catalog-staged'] }),
       });
     } catch {}

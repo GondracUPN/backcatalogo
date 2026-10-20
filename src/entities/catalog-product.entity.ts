@@ -5,6 +5,7 @@ export type SaleType = 'PREVENTA' | 'VENTA_SIMPLE' | 'PROMOCION' | 'OFERTA';
 // Los modelos se administran desde catalog_settings; no deben quedar limitados en el tipo.
 export type IphoneModel = string;
 export type ProductCondition = 'Nuevo' | 'Usado' | 'Open Box' | 'Arreglado';
+export type ProductPresentation = 'sellado' | 'abierto';
 export type IncludesKind = 'Caja + Cubo + Cable' | 'Caja + Cubo' | 'Caja + Cable' | 'Cubo + Cable' | 'Caja sola' | 'Cubo solo' | 'Cable solo' | 'Solo Cable' | 'Ninguno' | 'Otros';
 export type KeyboardLayout = 'Ingles' | 'Espanol' | 'Otro';
 
@@ -72,6 +73,10 @@ export class CatalogProduct {
 
   @Column({ type: 'text', nullable: true })
   product_condition!: ProductCondition | null;
+
+  /** Presentación de la unidad: 'sellado' | 'abierto'; NULL = no especificado. */
+  @Column({ type: 'text', nullable: true })
+  presentation!: ProductPresentation | null;
 
   @Column({ type: 'int', default: 0 })
   stock!: number;
