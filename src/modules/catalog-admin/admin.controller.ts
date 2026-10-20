@@ -13,6 +13,7 @@ import { SalesSyncService } from './sales-sync.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
 import { runOnce } from '../../utils/run-once';
 import { requireRole } from '../../utils/staff-auth';
+import { scopeForStaff } from '../../utils/sales-scope';
 import { requireSyncSecret } from '../../utils/shared-secret';
 
 const SALE_TYPES = new Set(['PREVENTA', 'VENTA_SIMPLE', 'PROMOCION', 'OFERTA']);
@@ -2366,8 +2367,9 @@ export class AdminController {
   }
 
   @Get('sales')
-  async listSales(@Headers('authorization') authHeader: string) {
+  async listSales(@Headers('authorization') authHeader: string, @Query('owner') owner?: string) {
     const staff = this.requireStaff(authHeader);
+    const scope = scopeForStaff(staff, owner);
     const mgr = this.productRepo.manager;
     await this.ensureSoldRecordsTable();
     await this.salesSync.ensureTable();
@@ -2410,10 +2412,15 @@ export class AdminController {
         ORDER BY se.created_at DESC
         LIMIT 1
       ) sync ON true
-      WHERE sr.owner_user_id IS NOT DISTINCT FROM $1
+      WHERE ($3::boolean OR sr.owner_user_id IS NOT DISTINCT FROM $1)
       ORDER BY sr.sold_at DESC, sr.created_at DESC
-    `, [this.ownerUserIdForStaff(staff), Math.max(1, Number(process.env.SOLD_PHOTO_CLEANUP_DAYS) || 60)]);
-    return { items: rows };
+    `, [scope.owner, Math.max(1, Number(process.env.SOLD_PHOTO_CLEANUP_DAYS) || 60), scope.all]);
+    const items = String(staff.role).toUpperCase() === 'ADMIN' ? rows : rows.map((row: Record<string, unknown>) => {
+      const safe = { ...row };
+      delete safe.customer_phone;
+      return safe;
+    });
+    return { items };
   }
 
   @Post('sales-sync/:eventId/retry')

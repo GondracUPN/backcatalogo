@@ -18,10 +18,11 @@
     "test:security-postgres": "ts-node src/tests/security-postgres.test.ts",
     "test:db:prepare": "ts-node src/scripts/prepare-security-test.ts",
     "db:check": "ts-node src/scripts/check-catalog-db.ts",
-    "test:modules": "ts-node src/tests/themes.test.ts && ts-node src/tests/location-matching.test.ts && ts-node src/tests/purchase-requests.test.ts && ts-node src/tests/analytics.test.ts && ts-node src/tests/promotion-edit.test.ts && ts-node src/tests/review-fixes.test.ts && npm run test:photos && npm run test:photo-review",
+    "test:modules": "ts-node src/tests/themes.test.ts && ts-node src/tests/location-matching.test.ts && ts-node src/tests/purchase-requests.test.ts && ts-node src/tests/analytics.test.ts && ts-node src/tests/promotion-edit.test.ts && ts-node src/tests/review-fixes.test.ts && npm run test:photos && npm run test:photo-review && npm run test:sales-analytics",
     "test:photos": "ts-node src/tests/product-photos.test.ts",
     "audit:photo-urls": "ts-node src/scripts/audit-photo-urls.ts",
-    "test:photo-review": "ts-node src/tests/photo-review.test.ts"
+    "test:photo-review": "ts-node src/tests/photo-review.test.ts",
+    "test:sales-analytics": "ts-node src/tests/sales-analytics.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
