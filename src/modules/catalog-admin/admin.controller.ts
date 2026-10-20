@@ -2374,6 +2374,12 @@ export class AdminController {
     await this.ensurePossibleClientsTable();
     const rows = await mgr.query(`
       SELECT sr.*,
+        CASE WHEN photo_staged.sku IS DISTINCT FROM p.sku THEN COALESCE(photo_staged.source_id,sr.product_id) ELSE sr.product_id END AS photos_product_id,
+        CASE WHEN p.presentation='sellado' OR photo_staged.presentation='sellado' THEN 'sellado' ELSE COALESCE(p.presentation,photo_staged.presentation) END AS presentation,
+        (COALESCE(p.photos_hold,false) OR COALESCE(photo_staged.photos_hold,false)) AS photos_hold,
+        COALESCE(p.photos_hold_reason,photo_staged.photos_hold_reason) AS photos_hold_reason,
+        GREATEST(COALESCE(jsonb_array_length(photo_pub.images),0),COALESCE(jsonb_array_length(photo_staged.images),0)) AS photo_count,
+        sr.sold_at + ($2::int * interval '1 day') AS photos_cleanup_at,
         sync.status AS sync_status,
         sync.remote_status AS sync_remote_status,
         sync.last_error AS sync_error,
@@ -2392,6 +2398,11 @@ export class AdminController {
         ) AS title
       FROM sold_records sr
       LEFT JOIN products p ON p.id = sr.product_id
+      LEFT JOIN catalog_public photo_pub ON photo_pub.product_id=sr.product_id
+      LEFT JOIN LATERAL (
+        SELECT s.* FROM staged_products s WHERE s.sku=sr.sku OR s.source_id=sr.product_id
+        ORDER BY (s.sku=sr.sku) DESC LIMIT 1
+      ) photo_staged ON true
       LEFT JOIN LATERAL (
         SELECT se.id, se.status, se.remote_status, se.last_error
         FROM sale_sync_events se
@@ -2401,7 +2412,7 @@ export class AdminController {
       ) sync ON true
       WHERE sr.owner_user_id IS NOT DISTINCT FROM $1
       ORDER BY sr.sold_at DESC, sr.created_at DESC
-    `, [this.ownerUserIdForStaff(staff)]);
+    `, [this.ownerUserIdForStaff(staff), Math.max(1, Number(process.env.SOLD_PHOTO_CLEANUP_DAYS) || 60)]);
     return { items: rows };
   }
 

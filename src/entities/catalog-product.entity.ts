@@ -81,6 +81,15 @@ export class CatalogProduct {
   @Column({ type: 'int', default: 0 })
   stock!: number;
 
+  @Column({ type: 'boolean', default: false })
+  photos_hold!: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  photos_hold_reason!: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  photos_hold_at!: Date | null;
+
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at!: Date;
 

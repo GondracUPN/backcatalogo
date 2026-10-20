@@ -9,10 +9,12 @@ import { AuthModule } from '../auth/auth.module';
 import { SyncModule } from '../sync/sync.module';
 import { SalesSyncService } from './sales-sync.service';
 import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
+import { ProductPhotosController } from './product-photos.controller';
+import { ProductPhotosService } from './product-photos.service';
 
 @Module({
   imports: [AuthModule, TypeOrmModule.forFeature([StagedProduct, CatalogPublic, CatalogProduct, CatalogView]), SyncModule, PurchaseRequestsModule],
-  controllers: [AdminController],
-  providers: [SalesSyncService],
+  controllers: [AdminController, ProductPhotosController],
+  providers: [SalesSyncService, ProductPhotosService],
 })
 export class AdminModule {}

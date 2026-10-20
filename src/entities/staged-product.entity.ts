@@ -87,6 +87,15 @@ export class StagedProduct {
   @Column({ name: 'owner_user_id', type: 'int', nullable: true })
   owner_user_id!: number | null;
 
+  @Column({ type: 'boolean', default: false })
+  photos_hold!: boolean;
+
+  @Column({ type: 'text', nullable: true })
+  photos_hold_reason!: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  photos_hold_at!: Date | null;
+
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at!: Date;
 
