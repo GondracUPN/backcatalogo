@@ -148,6 +148,13 @@ function reservationsManager(reserved: Array<{ product_id: string; qty: number }
   assert.equal(normalizeAppleTitle('iMac M4 24'), 'iMac M4 24 pulgadas');
   assert.equal(normalizeAppleTitle('iPad Air 11 WiFi'), 'iPad Air 11 pulgadas WiFi');
   assert.equal(normalizeAppleTitle('iPad mini 8.3'), 'iPad mini 8.3 pulgadas');
+  assert.equal(normalizeAppleTitle('iPad mini 7 8.3'), 'iPad mini 7 8.3 pulgadas');
+  assert.equal(normalizeAppleTitle('iPad mini 7 8.3 128GB WiFi'), 'iPad mini 7 8.3 pulgadas 128GB WiFi');
+  assert.equal(normalizeAppleTitle('iPad Air 5 10.9 WiFi'), 'iPad Air 5 10.9 pulgadas WiFi');
+  assert.equal(normalizeAppleTitle('iPad Air M2 6 11'), 'iPad Air M2 6 11 pulgadas');
+  assert.equal(normalizeAppleTitle('iPad mini 7 128GB'), 'iPad mini 7 128GB');
+  assert.equal(normalizeAppleTitle('iPad mini 6 8.3 pulgadas'), 'iPad mini 6 8.3 pulgadas');
+  assert.equal(normalizeAppleTitle('MacBook Pro M4 14 16 GB RAM'), 'MacBook Pro M4 14 pulgadas 16 GB RAM');
   assert.equal(normalizeAppleTitle('iPad 10 64GB'), 'iPad 10 64GB');
   assert.equal(normalizeAppleTitle('Apple Watch Series 11 46 mm'), 'Apple Watch Series 11 46 mm');
   assert.equal(normalizeAppleTitle('MacBook Air M4 16 GB RAM'), 'MacBook Air M4 16 GB RAM');

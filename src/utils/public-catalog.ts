@@ -21,7 +21,7 @@ export function publicNotes(staged: StagedProduct | null) {
     'gama', 'procesador', 'generacion', 'numero', 'modelo',
     'tamaño', 'tamanio', 'tamano', 'almacenamiento', 'ram',
     'conexion', 'conectividad', 'esim', 'sim', 'descripcionOtro',
-    'detalles', 'productDetails', 'detailImages',
+    'detalles', 'productDetails', 'detailImages', 'modeloHardware',
   ];
   const detail = Object.fromEntries(
     detailKeys
@@ -37,7 +37,7 @@ export function publicNotes(staged: StagedProduct | null) {
     'garantiaActiva', 'garantiaTipo', 'conectividad', 'watchType', 'watchSeries', 'watchVersion',
     'watchConnection', 'watchAccessories', 'watchIncludes', 'productCondition',
     'watchSize', 'estado', 'includes', 'includesExtra', 'incluye', 'descripcionOtro',
-    'cuboFake', 'cableFake',
+    'cuboFake', 'cableFake', 'desktopVariant',
     'productDetails', 'detalles', 'detailImages', 'detailPhotos',
   ];
   const result = Object.fromEntries(

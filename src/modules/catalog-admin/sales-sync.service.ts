@@ -96,12 +96,15 @@ export class SalesSyncService implements OnModuleInit {
     }
 
     const payload = event.payload;
+    const syncSecret = String(process.env.CATALOG_SYNC_SECRET || '').trim();
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-macso-event-id': String(event.id),
+          // Servicios exige el mismo CATALOG_SYNC_SECRET (CatalogEventGuard).
+          ...(syncSecret ? { 'x-sync-secret': syncSecret } : {}),
         },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(8000),

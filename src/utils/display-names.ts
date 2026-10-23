@@ -37,8 +37,9 @@ export function normalizeAppleTitle(value: unknown): string {
     .replace(/\bairpods\b/gi, 'AirPods');
   // Solo posiciones que representan pantallas: no el modelo de iPhone,
   // la generación de un iPad base, los mm de Watch ni la capacidad/RAM.
+  // Admite la generación antes del tamaño: "iPad mini 7 8.3".
   return normalized.replace(
-    /(\b(?:MacBook(?:\s+(?:Air|Pro|Neo))?|iPad\s+(?:Pro|Air|mini)|iMac|Studio Display|Pro Display XDR)(?:\s+(?:M\d+(?:\s+(?:Pro|Max|Ultra))?|Intel(?:\s+Core)?(?:\s+i[3579])?))?\s+)(\d{1,2}(?:[.,]\d+)?)(?![\d.,])(?:\s*(?:pulgadas\b|["″]))?(?!\w|\s*(?:GB|TB|RAM|mm|generaci[oó]n)\b)/gi,
+    /(\b(?:MacBook(?:\s+(?:Air|Pro|Neo))?|iPad\s+(?:Pro|Air|mini)|iMac|Studio Display|Pro Display XDR)(?:\s+(?:M\d+(?:\s+(?:Pro|Max|Ultra))?|Intel(?:\s+Core)?(?:\s+i[3579])?))?(?:\s+\d{1,2}(?:\.?ª)?(?:\s+gen(?:eraci[oó]n)?\.?)?(?=\s+\d{1,2}(?:[.,]\d+)?(?![\d.,])(?!\s*(?:GB|TB|RAM|mm)\b)))?\s+)(\d{1,2}(?:[.,]\d+)?)(?![\d.,])(?:\s*(?:pulgadas\b|["″]))?(?!\w|\s*(?:GB|TB|RAM|mm|generaci[oó]n)\b)/gi,
     (match, prefix: string, size: string) => {
       const inches = Number(size.replace(',', '.'));
       return inches >= 8 && inches <= 40 ? `${prefix}${size} pulgadas` : match;

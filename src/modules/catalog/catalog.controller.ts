@@ -386,7 +386,10 @@ export class CatalogController {
 
   @Get(':slug')
   async getOne(@Param('slug') slug: string) {
-    let pub = await this.publicRepo.findOne({ where: { slug, is_published: true as any } });
+    // Una sola lectura de lo publicado da la unidad y sus hermanas: buscar
+    // primero la unidad y luego su categoría eran dos viajes seguidos a la base.
+    const published = await this.publicRepo.find({ where: { is_published: true as any }, order: { sort_order: 'ASC' as any, created_at: 'DESC' as any } });
+    let pub = published.find((row) => row.slug === slug) || null;
     if (!pub) {
       const legacySku = slug.match(/-(svc-\d+)$/i)?.[1];
       if (legacySku) {
@@ -394,21 +397,17 @@ export class CatalogController {
           .createQueryBuilder('product')
           .where('LOWER(product.sku) = LOWER(:sku)', { sku: legacySku })
           .getOne();
-        if (legacyProduct) {
-          pub = await this.publicRepo.findOne({
-            where: { product_id: legacyProduct.id, is_published: true as any },
-          });
-        }
+        if (legacyProduct) pub = published.find((row) => row.product_id === legacyProduct.id) || null;
       }
     }
     if (!pub) throw new NotFoundException('not found');
     // La misma lectura alimenta la unidad y sus variantes: antes la unidad
     // se hidrataba dos veces y se repetían producto, staged y reservas.
     const category = publicCategoryGroup(pub.category);
-    const where: any = { is_published: true };
-    if (category === 'otros') where.category = Not(In(['macbook', 'ipad', 'iphone', 'watch']));
-    else where.category = pub.category;
-    const siblings = await this.hydratePublicRows(await this.publicRepo.find({ where, order: { sort_order: 'ASC' as any, created_at: 'DESC' as any } }), [pub.product_id]);
+    const sameCategory = published.filter((row) => category === 'otros'
+      ? row.category != null && !['macbook', 'ipad', 'iphone', 'watch'].includes(row.category) // igual que Not(In(...)) en SQL
+      : row.category === pub!.category);
+    const siblings = await this.hydratePublicRows(sameCategory, [pub.product_id]);
     const own = siblings.find(row => row.pub.id === pub!.id);
     if (!own) throw new NotFoundException('not found');
     const product = own.product || null, staged = own.staged || null, availability = own.availability;
