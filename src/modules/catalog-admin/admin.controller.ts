@@ -766,7 +766,6 @@ export class AdminController {
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '');
     if (!customerName || !customerPhone) throw new BadRequestException('customer name and phone required');
     const photoUrl = clientPhotoUrl(body?.clientPhotoUrl);
-    if (!photoUrl) throw new BadRequestException('client photo required');
     const productImageUrl = primaryImage(staged.images);
     const customerKindRaw = String(body?.customerKind || '').trim();
     const customerKind = ['tranquilo', 'regateador'].includes(customerKindRaw) ? customerKindRaw : 'tranquilo';
@@ -2146,7 +2145,6 @@ export class AdminController {
     const customerPhone = String(body?.phone || body?.customerPhone || '').replace(/\D+/g, '');
     if (!customerName || !customerPhone) throw new BadRequestException('customer name and phone required');
     const photoUrl = clientPhotoUrl(body?.clientPhotoUrl);
-    if (!photoUrl) throw new BadRequestException('client photo required');
     const publicProduct = await this.publicRepo.findOne({ where: { product_id: productId } });
     const productImageUrl = primaryImage(soldLinked?.images) || primaryImage(publicProduct?.images) || primaryImage(mainStaged?.images);
     const customerKindRaw = String(body?.customerKind || '').trim();
@@ -2473,6 +2471,8 @@ export class AdminController {
        RETURNING *`,
       [salePrice, soldAt, saleId],
     );
+    // TypeORM/pg devuelve [filas, cantidad] para UPDATE ... RETURNING.
+    const updated = (Array.isArray(rows[0]) ? rows[0] : rows)[0];
     const product = await this.productRepo.findOne({ where: { id: current.product_id } });
     let title = String(current.product_title || product?.title || '').trim();
     if (!title) {
@@ -2485,7 +2485,13 @@ export class AdminController {
       );
       title = String(titleRows?.[0]?.product_title || '').trim();
     }
-    return { ok: true, item: { ...rows[0], title: title || null } };
+    // El formulario solo envía el día; se compara en hora de Lima para no
+    // reenviar a Servicios una venta cuyo día no cambió.
+    const limaDay = (value: Date) => new Date(value.getTime() - 5 * 3600_000).toISOString().slice(0, 10);
+    const changed = Number(current.sale_price) !== salePrice
+      || limaDay(new Date(current.sold_at)) !== limaDay(soldAt);
+    const sync = changed ? await this.salesSync.syncSaleEdit(updated) : null;
+    return { ok: true, item: { ...updated, title: title || null }, sync };
   }
 
   /**
@@ -2734,7 +2740,6 @@ export class AdminController {
     if (!['tranquilo', 'regateador'].includes(customerKind)) throw new BadRequestException('invalid customer kind');
     if (salePlaceType === 'otro' && !saleLocation) throw new BadRequestException('sale location required');
     const photoUrl = clientPhotoUrl(body?.clientPhotoUrl) || currentRows[0].client_photo_url || null;
-    if (!photoUrl) throw new BadRequestException('client photo required');
     const publicProduct = currentRows[0].product_id
       ? await this.publicRepo.findOne({ where: { product_id: currentRows[0].product_id } })
       : null;

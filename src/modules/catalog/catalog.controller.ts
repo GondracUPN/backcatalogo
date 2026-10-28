@@ -329,9 +329,22 @@ export class CatalogController {
     });
 
     const items = bestRows.slice(0, 8).map((row) => this.compactRow(row.pub, row.product, row.staged, row.availability));
+    // Destacados = lo más visto: visitantes distintos por equipo en los últimos
+    // 30 días. Se envían candidatos de sobra porque la portada descarta los que
+    // ya muestra la vitrina o «Recién llegados». A igual visitas, el más nuevo.
+    await this.ensureCatalogViewsTable();
+    const viewRows: Array<{ product_id: string; visitors: number }> = await this.viewRepo.manager.query(
+      `SELECT product_id, COUNT(DISTINCT session_id)::int AS visitors
+         FROM catalog_views
+        WHERE created_at >= now() - interval '30 days'
+        GROUP BY product_id`,
+    );
+    const visitors = new Map(viewRows.map((row) => [String(row.product_id), Number(row.visitors) || 0]));
+    const visitorsOf = (row: (typeof bestRows)[number]) => visitors.get(String(row.pub.product_id)) || 0;
     const featured = bestRows
-      .filter((row) => this.priceMeta(row.product, row.staged).saleType !== 'PREVENTA')
-      .slice(0, 4)
+      .filter((row) => this.priceMeta(row.product, row.staged).saleType !== 'PREVENTA' && visitorsOf(row) > 0)
+      .sort((a, b) => visitorsOf(b) - visitorsOf(a))
+      .slice(0, 12)
       .map((row) => this.compactRow(row.pub, row.product, row.staged, row.availability));
 
     // Promociones reales (precio rebajado sobre un precio anterior) para las campañas de la portada.

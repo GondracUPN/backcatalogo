@@ -14,7 +14,7 @@ function createManager(calls: QueryCall[]) {
   };
 }
 
-async function testMarkSoldUsesExplicitSalePrice() {
+async function testMarkSoldUsesExplicitSalePrice(clientPhotoUrl?: string) {
   const queries: QueryCall[] = [];
   const updates: Array<{ where: unknown; patch: unknown }> = [];
 
@@ -44,7 +44,7 @@ async function testMarkSoldUsesExplicitSalePrice() {
     salePrice: '3999.50',
     customerName: 'Cliente de prueba',
     customerPhone: '900000000',
-    clientPhotoUrl: '/clientes/test.jpg',
+    clientPhotoUrl,
   });
 
   assert.equal(result.ok, true);
@@ -53,6 +53,45 @@ async function testMarkSoldUsesExplicitSalePrice() {
   assert.ok(saleInsert);
   assert.deepEqual(saleInsert.params?.slice(0, 2), ['prod-1', 'MBA-001']);
   assert.equal(saleInsert.params?.[3], 3999.5);
+  assert.equal(saleInsert.params?.[12], clientPhotoUrl || null);
+}
+
+async function testInventoryAndPossibleClientWithoutPhoto() {
+  const queries: QueryCall[] = [];
+  const manager = {
+    ...createManager(queries),
+    update: async () => ({ affected: 1 }),
+    async transaction(work: (db: any) => Promise<void>) { await work(manager); },
+  };
+  const controller = new AdminController(
+    { verifyToken: () => ({ role: 'ADMIN' }) } as any,
+    { findOne: async () => ({ id: 'staged-1', sku: 'MBA-001', title: 'MacBook', status: 'draft', stock: 1, price: 4500 }) } as any,
+    { findOne: async () => null } as any,
+    { manager } as any,
+    {} as any,
+    {} as any,
+    { enqueueAndDispatch: async () => ({ ok: true }) } as any,
+  );
+  const sale = await controller.markStagedSold('Bearer ok', 'staged-1', {
+    saleDate: '2026-04-08', name: 'Cliente de prueba', phone: '900000000',
+  });
+  assert.equal(sale.ok, true);
+  assert.equal(sale.remainingStock, 0);
+  const insert = queries.find((call) => /INSERT INTO sold_records/i.test(call.sql));
+  assert.ok(insert);
+  assert.equal(insert.params?.[12], null);
+
+  manager.query = async (sql: string, params?: unknown[]) => {
+    queries.push({ sql, params });
+    if (/SELECT \* FROM possible_clients/i.test(sql)) return [{ id: 'client-1' }];
+    if (/UPDATE possible_clients/i.test(sql)) return [{ id: 'client-1', client_photo_url: params?.[4] }];
+    return [];
+  };
+  const purchase = await controller.markPossibleClientPurchased('Bearer ok', 'client-1', {
+    customerKind: 'tranquilo', salePlaceType: 'almacen',
+  });
+  assert.equal(purchase.ok, true);
+  assert.equal(purchase.item.client_photo_url, null);
 }
 
 async function testMarkSoldFallsBackToCatalogPrice() {
@@ -182,6 +221,8 @@ async function testTrackViewRejectsForgedSlug() {
 
 async function run() {
   await testMarkSoldUsesExplicitSalePrice();
+  await testMarkSoldUsesExplicitSalePrice('/clientes/test.jpg');
+  await testInventoryAndPossibleClientWithoutPhoto();
   await testMarkSoldFallsBackToCatalogPrice();
   await testTrackViewStoresCanonicalProductData();
   await testTrackViewRejectsForgedSlug();

@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
-type SaleSyncEventType = 'sale.created' | 'sale.cancelled';
+type SaleSyncEventType = 'sale.created' | 'sale.cancelled' | 'sale.updated';
 
 type SaleSyncSource = {
   id: string;
@@ -139,6 +139,31 @@ export class SalesSyncService implements OnModuleInit {
   async enqueueAndDispatch(eventType: SaleSyncEventType, sale: SaleSyncSource) {
     const eventId = await this.enqueue(eventType, sale);
     return { eventId, ...(await this.dispatch(eventId)) };
+  }
+
+  /**
+   * Avisa a Servicios de una venta editada (precio o fecha). Si el alta aún no
+   * llegó, basta con reenviarla con los datos nuevos; si ya llegó, se manda
+   * `sale.updated`. Las ventas anteriores a la sincronización no se tocan.
+   */
+  async syncSaleEdit(sale: SaleSyncSource) {
+    if (!sale?.id) throw new Error('syncSaleEdit requiere la venta actualizada');
+    await this.ensureTable();
+    const amount = Number(sale.sale_price || 0);
+    const soldAt = sale.sold_at ? new Date(sale.sold_at).toISOString() : new Date().toISOString();
+    // Sin esto, un reenvío del alta (p. ej. tras un rechazo) llevaría el precio viejo.
+    const result = await this.dataSource.query(
+      `UPDATE sale_sync_events
+          SET payload = payload || jsonb_build_object('amount', $2::numeric, 'soldAt', $3::text), updated_at = now()
+        WHERE sale_id = $1 AND event_type = 'sale.created'
+        RETURNING id, status`,
+      [sale.id, amount, soldAt],
+    );
+    const rows = Array.isArray(result[0]) ? result[0] : result;
+    const created = rows[0];
+    if (!created) return null;
+    if (created.status !== 'sent') return { eventId: String(created.id), ...(await this.dispatch(String(created.id))) };
+    return this.enqueueAndDispatch('sale.updated', sale);
   }
 
   async updateRemoteStatus(eventId: string, remoteStatus: string) {
