@@ -103,7 +103,7 @@ export class MarketplaceResolverController {
         FROM staged_products sp WHERE sp.sku = p.sku OR sp.source_id = p.id
         ORDER BY (sp.sku = p.sku) DESC, sp.id LIMIT 1
       ) s ON true
-      WHERE p.status IN ('listed', 'sold') AND COALESCE(s.status, 'listed') IN ('listed', 'sold')
+      WHERE p.status IN ('listed', 'sold') AND COALESCE(s.status, 'listed') IN ('listed', 'published', 'sold')
         AND s.owner_user_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM staged_products own
           WHERE (own.sku = p.sku OR own.source_id = p.id) AND own.owner_user_id IS NOT NULL)

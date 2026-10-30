@@ -21,7 +21,7 @@ async function main() {
     CREATE TABLE stock_reservations(product_id uuid, qty int, released_at timestamptz, expires_at timestamptz);
     INSERT INTO products VALUES ('aaaaaaaa-1111-4111-8111-111111111111', 'MS-476', 'iPhone 15 Normal 128GB Black', 1800, NULL, 'listed', 1, 'VENTA_SIMPLE',128,'Black','Normal',15);
     INSERT INTO catalog_public VALUES ('aaaaaaaa-1111-4111-8111-111111111111', 'iphone-15-normal-128gb-black-2', true);
-    INSERT INTO staged_products VALUES ('bbbbbbbb-1111-4111-8111-111111111111', 'aaaaaaaa-1111-4111-8111-111111111111', 'MS-476', 'listed', 'VENTA_SIMPLE', NULL, '{"cost":999,"supplier":"private"}', NULL);
+    INSERT INTO staged_products VALUES ('bbbbbbbb-1111-4111-8111-111111111111', 'aaaaaaaa-1111-4111-8111-111111111111', 'MS-476', 'published', 'VENTA_SIMPLE', NULL, '{"cost":999,"supplier":"private"}', NULL);
   `);
   process.env.JWT_SECRET = 'marketplace-resolver-isolated-test-secret';
   const auth = new AuthService({} as any);
@@ -55,6 +55,13 @@ async function main() {
       url: 'https://www.macsomenos.com/product/iphone-15-normal-128gb-black-2', available: true, availability: 'available',
     } });
     for (const sku of ['MS-476', 'ms-476', 'SKU 476', ' 476 ']) assert.deepEqual(await (await get({ sku })).json(), expected);
+    await query(`UPDATE staged_products SET status = 'listed'`);
+    assert.deepEqual(await (await get({ sku: '476' })).json(), expected, 'also accepts legacy listed inventory');
+    await query(`UPDATE staged_products SET status = 'hidden'`);
+    await failure({ sku: '476' }, 404);
+    await query(`UPDATE staged_products SET status = 'draft'`);
+    await failure({ sku: '476' }, 404);
+    await query(`UPDATE staged_products SET status = 'published'`);
     assert.deepEqual(skuCandidates('MS-00476'), ['00476', 'MS-00476', 'ms-00476']);
     assert.deepEqual(skuCandidates('OTHER-476'), ['OTHER-476']);
     assert.deepEqual(skuCandidates('SKU OTHER-476'), ['SKU OTHER-476']);
