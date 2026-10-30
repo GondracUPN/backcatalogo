@@ -114,6 +114,51 @@ async function main() {
     await pg.exec(`UPDATE products SET status = 'listed'; UPDATE catalog_public SET is_published = false;`);
     await failure({ sku: '476' }, 404);
     await query(`UPDATE catalog_public SET is_published = true`);
+    const linkToken = auth.signToken({ sub: 5, username: 'link_admin', role: 'ADMIN' });
+    const linksBase = base.replace('/resolve', '/listings');
+    const postLink = (body: any, jwt = linkToken) => fetch(linksBase, { method: 'POST', headers: {
+      'Content-Type': 'application/json', ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
+    }, body: JSON.stringify(body) });
+    const linkBody = { listingId: '1111100001', sku: '476', url: 'https://www.macsomenos.com/product/new-current-slug', title: 'iPhone 15 Normal 128GB Black', price: '1800' };
+    const getLink = (id: string, params: Record<string,string> = { title: linkBody.title, price: linkBody.price }, jwt = linkToken) => fetch(`${linksBase}/${id}?${new URLSearchParams(params)}`, { headers: jwt ? { Authorization: `Bearer ${jwt}` } : {} });
+    assert.equal((await getLink(linkBody.listingId)).status, 404, 'unlinked read does not create the table');
+    assert.equal((await query(`SELECT to_regclass('marketplace_listing_links') AS name`))[0].name, null);
+    assert.equal((await postLink(linkBody, '')).status, 401);
+    assert.equal((await postLink(linkBody, seller)).status, 403);
+    assert.equal((await postLink({ ...linkBody, listingId: "' OR 1=1" })).status, 400);
+    assert.equal((await postLink({ ...linkBody, url: 'https://evil.invalid/product/x' })).status, 400);
+    assert.equal((await postLink({ ...linkBody, sku: '477' })).status, 409);
+    for (const listingId of ['1111100001', '2222200002', '3333300003']) {
+      assert.equal((await postLink({ ...linkBody, listingId })).status, 201, 'three Facebook accounts can link distinct ads to one SKU');
+      const response = await getLink(listingId);
+      assert.equal(response.status, 200);
+      const body = await response.json() as any;
+      assert.equal(body.linked, true); assert.equal(body.product.sku, '476');
+      assert.equal(body.product.url, linkBody.url);
+    }
+    assert.equal((await postLink(linkBody)).status, 201, 'link creation is idempotent');
+    assert.equal((await query(`SELECT count(*)::int AS n FROM marketplace_listing_links`))[0].n, 3);
+    assert.equal((await getLink(linkBody.listingId, { sku: 'MS-476' })).status, 200);
+    assert.equal((await getLink(linkBody.listingId, undefined, seller)).status, 403);
+    const changed = await getLink(linkBody.listingId, { title: 'Another product', price: '1800' });
+    assert.equal(changed.status, 409);
+    assert.equal(((await changed.json()) as any).code, 'LISTING_EVIDENCE_CHANGED');
+    await query(`UPDATE products SET status = 'sold'`);
+    assert.equal(((await (await getLink(linkBody.listingId)).json()) as any).product.available, false, 'linked ads never bypass real availability');
+    assert.equal((await postLink(linkBody)).status, 409);
+    await query(`UPDATE products SET status = 'listed'`);
+    await query(`UPDATE catalog_public SET slug = 'changed-after-link'`);
+    assert.equal(((await (await getLink(linkBody.listingId)).json()) as any).product.url, 'https://www.macsomenos.com/product/changed-after-link');
+    await query(`INSERT INTO products SELECT 'dddddddd-1111-4111-8111-111111111111', 'MS-477', title, price, final_price, status, stock, sale_type, storage_gb, color, iphone_model, iphone_number FROM products LIMIT 1`);
+    await query(`INSERT INTO catalog_public VALUES ('dddddddd-1111-4111-8111-111111111111','other-product', true)`);
+    assert.equal((await postLink({ ...linkBody, sku: '477', url: 'https://www.macsomenos.com/product/other-product' })).status, 409, 'cannot repoint an existing ad to another physical unit');
+    assert.equal(((await (await getLink(linkBody.listingId)).json()) as any).product.sku, '476');
+    assert.equal((await postLink({ ...linkBody, listingId: '4444400004', sku: '477', url: 'https://www.macsomenos.com/product/other-product' })).status, 201);
+    await query(`DELETE FROM catalog_public WHERE slug = 'other-product'`);
+    await query(`DELETE FROM products WHERE sku = 'MS-477'`);
+    const removedLink = await getLink('4444400004');
+    assert.equal(removedLink.status, 409, 'deleting a product preserves an association tombstone');
+    assert.equal(((await removedLink.json()) as any).code, 'LISTING_PRODUCT_REMOVED');
     const benchmarkToken = auth.signToken({ sub: 3, username: 'benchmark_admin', role: 'ADMIN' });
     const samples: number[] = [];
     for (let i = 0; i < 20; i++) {

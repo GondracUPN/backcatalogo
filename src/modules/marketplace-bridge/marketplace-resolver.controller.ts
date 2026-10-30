@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Controller, Get, Header, Headers, HttpException, NotFoundException, Query } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, Header, Headers, HttpException, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
@@ -46,11 +46,89 @@ function containsKnownSpecs(title: string, row: any, notes: any) {
 @Controller('admin/marketplace')
 export class MarketplaceResolverController {
   private readonly attempts = new Map<number, { count: number; expires: number }>();
+  private linksReady: Promise<void> | null = null;
 
   constructor(
     private readonly auth: AuthService,
     @InjectRepository(CatalogProduct) private readonly products: Repository<CatalogProduct>,
   ) {}
+
+  private listingId(value: unknown) {
+    const id = text(value, 'listingId', 25);
+    if (!/^\d{5,25}$/.test(id)) throw new BadRequestException('Invalid listingId');
+    return id;
+  }
+
+  private ensureLinks() {
+    if (!this.linksReady) this.linksReady = (async () => {
+      await this.products.manager.query(`CREATE TABLE IF NOT EXISTS marketplace_listing_links (
+        listing_id text PRIMARY KEY,
+        product_id uuid NULL REFERENCES products(id) ON DELETE SET NULL,
+        sku text NOT NULL, title_key text NULL, price text NULL,
+        created_by integer NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`);
+      await this.products.manager.query(`CREATE INDEX IF NOT EXISTS marketplace_listing_links_product_idx ON marketplace_listing_links(product_id)`);
+    })().catch(error => { this.linksReady = null; throw error; });
+    return this.linksReady;
+  }
+
+  @Get('listings/:listingId')
+  @Header('Cache-Control', 'private, no-store')
+  async linkedListing(@Headers('authorization') authorization: string, @Param('listingId') rawId: string, @Query() query: Record<string, unknown>) {
+    requireRole(this.auth, authorization, ['ADMIN']);
+    const id = this.listingId(rawId);
+    if (Object.keys(query).some(key => !['sku', 'title', 'price', 'productId'].includes(key))) throw new BadRequestException('Unknown query parameter');
+    for (const [key, value] of Object.entries(query)) text(value, key, key === 'title' ? 300 : 100);
+    let rows: any[];
+    try { rows = await this.products.manager.query('SELECT product_id, sku, title_key, price FROM marketplace_listing_links WHERE listing_id = $1', [id]); }
+    catch (error: any) { if (error.code === '42P01') throw new NotFoundException('Listing is not linked'); throw error; }
+    const link = rows[0];
+    if (!link) throw new NotFoundException('Listing is not linked');
+    if (!link.product_id) throw new ConflictException({ code: 'LISTING_PRODUCT_REMOVED', message: 'El equipo vinculado a este anuncio fue eliminado. No se asociará a otro equipo automáticamente.' });
+    const sameSku = typeof query.sku === 'string' && skuCandidates(query.sku).includes(link.sku);
+    const sameProduct = typeof query.productId === 'string' && query.productId === link.product_id;
+    const sameTitlePrice = typeof query.title === 'string' && typeof query.price === 'string'
+      && normalizedMarketplaceTitle(query.title) === link.title_key && query.price === link.price;
+    if (!sameSku && !sameProduct && !sameTitlePrice) throw new ConflictException({ code: 'LISTING_EVIDENCE_CHANGED', message: 'El anuncio cambió; se debe verificar de nuevo antes de usar su vínculo.' });
+    const resolved = await this.resolve(authorization, { productId: link.product_id });
+    if (resolved.product.sku !== link.sku) throw new ConflictException('Linked product SKU changed');
+    return { ...resolved, linked: true };
+  }
+
+  @Post('listings')
+  @Header('Cache-Control', 'private, no-store')
+  async linkListing(@Headers('authorization') authorization: string, @Body() body: Record<string, unknown>) {
+    const user = requireRole(this.auth, authorization, ['ADMIN']);
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || Object.keys(body).some(key => !['listingId', 'sku', 'url', 'title', 'price'].includes(key))) throw new BadRequestException('Invalid link body');
+    const id = this.listingId(body.listingId);
+    const sku = text(body.sku, 'sku', 100);
+    const url = text(body.url, 'url', 1000);
+    let slug: string;
+    try {
+      const parsed = new URL(url);
+      if (parsed.origin !== 'https://www.macsomenos.com' || !/^\/product\/[^/]+$/.test(parsed.pathname) || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error();
+      slug = decodeURIComponent(parsed.pathname.slice('/product/'.length));
+    } catch { throw new BadRequestException('Invalid product URL'); }
+    const title = body.title === undefined ? null : text(body.title, 'title', 300);
+    const price = body.price === undefined ? null : text(body.price, 'price', 12);
+    if (price !== null && !/^\d{1,9}$/.test(price)) throw new BadRequestException('Invalid price');
+    const pubs = await this.products.manager.query('SELECT product_id FROM catalog_public WHERE slug = $1 AND is_published = true', [slug]);
+    if (!pubs[0]) throw new NotFoundException('Published product not found');
+    const resolved = await this.resolve(authorization, { productId: pubs[0].product_id });
+    if (!skuCandidates(sku).includes(resolved.product.sku) || resolved.product.url !== url) throw new ConflictException('Product URL and SKU do not agree');
+    if (!resolved.product.available) throw new ConflictException('Product is unavailable');
+    await this.ensureLinks();
+    const rows = await this.products.manager.query(`INSERT INTO marketplace_listing_links
+        (listing_id, product_id, sku, title_key, price, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      ON CONFLICT (listing_id) DO UPDATE SET title_key = EXCLUDED.title_key, price = EXCLUDED.price, updated_at = now()
+        WHERE marketplace_listing_links.product_id = EXCLUDED.product_id AND marketplace_listing_links.sku = EXCLUDED.sku
+      RETURNING listing_id`, [id, pubs[0].product_id, resolved.product.sku, title ? normalizedMarketplaceTitle(title) : null, price, user.sub]);
+    if (!rows[0]) throw new ConflictException({ code: 'LISTING_LINK_CONFLICT', message: 'Este anuncio ya está vinculado a otro equipo. No se cambiará la asociación ni se enviará otro producto automáticamente.' });
+    return { linked: true, listingId: id, product: resolved.product };
+  }
 
   @Get('resolve')
   @Header('Cache-Control', 'private, no-store')
