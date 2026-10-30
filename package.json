@@ -12,6 +12,7 @@
     "seed": "ts-node src/seed.ts",
     "test:catalog-p1": "ts-node src/tests/catalog-p1.test.ts",
     "test:availability": "ts-node src/tests/catalog-availability.test.ts",
+    "test:marketplace-resolver": "ts-node src/tests/marketplace-resolver.test.ts",
     "test:smoke": "ts-node src/tests/validate-product.test.ts && ts-node src/tests/catalog-p1.test.ts && ts-node src/tests/perf-security.test.ts && npm run test:modules",
     "test:perf-security": "ts-node src/tests/perf-security.test.ts",
     "test:security-phase1": "ts-node src/tests/security-phase1.test.ts",
