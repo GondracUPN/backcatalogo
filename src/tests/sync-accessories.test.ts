@@ -15,6 +15,11 @@ async function main() {
       const rows = stores.get(type)!; const old = rows.find((row) => type === CatalogPublic ? row.product_id === value.product_id : row.idem_key === value.idem_key);
       if (old) Object.assign(old, value); else rows.push(value); return value;
     },
+    insert: async (value: any) => {
+      const rows = stores.get(type)!;
+      if (type === StagedProduct && rows.some((row) => row.source_id === value.source_id)) throw new Error('duplicate source_id');
+      rows.push({ id: `staged-${rows.length + 1}`, ...value });
+    },
     upsert: async (value: any, { conflictPaths }: any) => {
       const rows = stores.get(type)!; const old = rows.find((row) => conflictPaths.every((key: string) => row[key] === value[key]));
       if (old) Object.assign(old, value); else rows.push(value);
@@ -82,6 +87,14 @@ async function main() {
     assert.equal(stores.get(CatalogProduct)!.length, 2);
     p.selected = false; p.sku = 'acc-lot-987'; await sync('never-selected');
     assert.equal(stores.get(CatalogProduct)!.length, 2, 'retirar uno no enviado no crea producto');
+    // Caso de producción: la fila del SKU apunta a otro source_id. Debe actualizarse y revincularse, no insertarse.
+    stores.get(StagedProduct)!.push({ id: 'desvinculada', source_id: 'otro-producto', sku: 'acc-lot-555', notes: null, images: [] });
+    p.selected = true; p.stock = 2; p.sku = 'acc-lot-555'; await sync('relink');
+    const relinked = stores.get(StagedProduct)!.filter((row) => row.sku === 'acc-lot-555');
+    assert.equal(relinked.length, 1, 'no crea una segunda fila para el mismo SKU');
+    assert.equal(relinked[0].id, 'desvinculada');
+    assert.equal(relinked[0].source_id, stores.get(CatalogProduct)!.find((row) => row.sku === 'acc-lot-555').id, 'queda vinculada al producto');
+    assert.equal(relinked[0].stock, 2);
     p.sku = 'svc-99'; await assert.rejects(sync('invalid'));
     console.log('accessory snapshots: auth, idempotency, stock, privacy, withdrawal and restore passed');
   } finally {

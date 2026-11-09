@@ -1,6 +1,6 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Post, Query, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpException, InternalServerErrorException, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
 import { SyncLog } from '../../entities/sync-log.entity';
 import { StagedProduct } from '../../entities/staged-product.entity';
@@ -133,6 +133,7 @@ export class SyncController {
       || (p.selected && !(Number(p.price) > 0))) {
       throw new BadRequestException('Invalid accessory snapshot');
     }
+    try {
     await this.products.manager.transaction(async (em) => {
       await em.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['accessory:' + sku]);
       const logs = em.getRepository(SyncLog);
@@ -169,7 +170,12 @@ export class SyncController {
           [sku, Array.isArray(p.confirmedSales) ? p.confirmedSales.map(String) : []]);
         pending = Number(rows[0]?.qty || 0);
       }
-      const previousStaged = await staged.findOne({ where: { sku } });
+      // Fila de inventario del catálogo: primero la vinculada al producto; si no, la del SKU sin vendedor.
+      // Antes se tomaba cualquier fila del SKU y se hacía upsert por source_id: si esa fila tenía otro
+      // source_id, el INSERT reutilizaba su id y fallaba con staged_products_pkey (HTTP 500).
+      const previousStaged = (await staged.findOne({ where: { source_id: id } }))
+        || (await staged.findOne({ where: { sku, owner_user_id: IsNull() } }))
+        || (await staged.findOne({ where: { sku } }));
       const publication = await publications.findOne({ where: { product_id: id } });
       if (!p.selected && !existing && !previousStaged) {
         await logs.save(logs.create({ idem_key: idemKey }));
@@ -194,19 +200,29 @@ export class SyncController {
         presentation: existing?.presentation ?? presentation,
       }, { conflictPaths: ['sku'] });
       const notes = JSON.stringify({ ...(this.parseNotes(previousStaged?.notes) || { tipo: 'accesorios', productCondition: condition }), accessorySourceTitle: originalTitle, ...(Number.isSafeInteger(p.accessoryCode) && p.accessoryCode > 0 ? { accessoryCode: p.accessoryCode } : {}) });
-      await staged.upsert({ ...(previousStaged || {}), source_id: id, sku,
+      const stagedValues = { source_id: id, sku,
         title: stagedTitle, price: previousStaged?.price ?? String(p.price), stock,
         status: (manuallyPublished ? 'published' : p.selected ? 'draft' : 'hidden') as any,
         category: previousStaged?.category || 'accesorios', images: previousStaged?.images || [], notes,
         sale_type: previousStaged?.sale_type || 'VENTA_SIMPLE',
         product_condition: condition,
         presentation: previousStaged?.presentation ?? presentation,
-      }, { conflictPaths: ['source_id'] });
+      };
+      // Actualiza la fila existente por su id (y la vuelve a vincular al producto); si no hay, la crea.
+      if (previousStaged) await staged.update({ id: previousStaged.id }, stagedValues);
+      else await staged.insert(stagedValues);
       if (publication) {
         await publications.save(publications.create({ ...publication, is_published: manuallyPublished }));
       }
       await logs.save(logs.create({ idem_key: idemKey }));
     });
+    } catch (error: any) {
+      if (error instanceof HttpException) throw error;
+      // Solo responde a Servicios (petición autenticada con la clave de sincronización): el motivo
+      // de la base de datos se muestra en su modal para diagnosticar sin entrar a los logs.
+      console.error('[sync] accessory snapshot failed', sku, error);
+      throw new InternalServerErrorException(`No se pudo guardar ${sku} en el catálogo: ${String(error?.message || error).slice(0, 300)}`);
+    }
     if (!process.env.MACSO_TEST_DATABASE_URL) {
       try {
         await fetch(`${process.env.NEXT_BASE_URL || 'http://127.0.0.1:3000'}/api/admin/revalidate`, {
