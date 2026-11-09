@@ -1,3 +1,4 @@
+import { accessoryPackTotal, readAccessoryPack } from '../../utils/accessory-pack';
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Param, Post, Put, Query, Req } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
@@ -82,6 +83,14 @@ export class CartController {
     return salePrice;
   }
 
+  private resolveRowTotal(row: CartItem, product: CatalogProduct | null, staged: StagedProduct | null) {
+    const price = this.resolveRowPrice(row, product, staged);
+    const qty = Number(row.qty || 1);
+    const negotiated = row.offer_price != null && Number(row.offer_price) !== Number(product?.price ?? staged?.price);
+    const pack = staged?.category === 'accesorios' && !negotiated ? readAccessoryPack(this.parseNotes(staged.notes).accessoryPack) : null;
+    return pack ? accessoryPackTotal(price, qty, pack) : price * qty;
+  }
+
   private resolveRowColor(product: CatalogProduct | null, staged: StagedProduct | null) {
     const notes = this.parseNotes(staged?.notes);
     return String(product?.color || staged?.color || notes?.color || '').trim();
@@ -98,13 +107,13 @@ export class CartController {
     return 'purchase';
   }
 
-  private assertAvailableQuantity(product: CatalogProduct, qty: number) {
+  private assertAvailableQuantity(product: CatalogProduct, qty: number, staged?: StagedProduct) {
     if (!Number.isInteger(qty) || qty < 1) throw new BadRequestException('Cantidad no válida');
     if (product.status === 'sold') throw new BadRequestException('Este equipo ya se vendió');
     const stock = Number(product.stock ?? 0);
     if (!Number.isFinite(stock) || stock <= 0) throw new BadRequestException('Este equipo está agotado o reservado en este momento');
     const isNew = String(product.product_condition || '').toLowerCase().includes('nuevo');
-    const maxQty = isNew ? stock : 1;
+    const maxQty = isNew || staged?.category === 'accesorios' ? stock : 1;
     if (qty > maxQty) throw new BadRequestException('No hay tantas unidades disponibles');
   }
 
@@ -164,6 +173,7 @@ export class CartController {
           qty: it.qty,
           offer_price: it.offer_price ?? null,
           created_at: it.created_at,
+          line_total: this.resolveRowTotal(it, prod || null, staged || null),
           product: publicProduct(prod || null),
           staged: publicStaged(staged || null),
           slug: pub?.slug || null,
@@ -185,7 +195,8 @@ export class CartController {
     const product = await this.products.findOne({ where: { id: productId } });
     if (!product) throw new BadRequestException('Este equipo ya no está disponible');
     await applyReservedStock(this.products.manager, [product]);
-    this.assertAvailableQuantity(product, qty);
+    const stagedItem = qty > 1 && !String(product.product_condition || '').toLowerCase().includes('nuevo') ? (await this.staged.findBy({ sku: product.sku }))[0] : undefined;
+    this.assertAvailableQuantity(product, qty, stagedItem);
 
     let offer: string | null = null;
     if (product.sale_type === 'OFERTA') {
@@ -255,7 +266,8 @@ export class CartController {
     const product = await this.products.findOne({ where: { id: item.product_id } });
     if (!product) throw new BadRequestException('Este equipo ya no está disponible');
     await applyReservedStock(this.products.manager, [product]);
-    this.assertAvailableQuantity(product, qty);
+    const stagedItem = qty > 1 && !String(product.product_condition || '').toLowerCase().includes('nuevo') ? (await this.staged.findBy({ sku: product.sku }))[0] : undefined;
+    this.assertAvailableQuantity(product, qty, stagedItem);
     item.qty = qty;
     await this.cartItems.save(item);
     await this.refreshSessionCart(req, cartId);
@@ -381,7 +393,7 @@ export class CartController {
         const stock = Number(product.stock ?? 0);
         const isNew = String(product.product_condition || '').toLowerCase().includes('nuevo');
         if (!Number.isFinite(stock) || stock <= 0) reason = 'está agotado o reservado';
-        else if (qty > (isNew ? stock : 1)) reason = `solo quedan ${isNew ? stock : 1} disponibles`;
+        else if (qty > (isNew || stagedBySkuMap.get(product.sku)?.category === 'accesorios' ? stock : 1)) reason = `solo quedan ${isNew || stagedBySkuMap.get(product.sku)?.category === 'accesorios' ? stock : 1} disponibles`;
       }
       if (reason) unavailable.push({ productId: row.product_id, title, reason });
     }
@@ -398,7 +410,10 @@ export class CartController {
     const itemSummary = rows.map((row) => {
       const product = productById.get(row.product_id) || null;
       const staged = product?.sku ? stagedBySkuMap.get(product.sku) || null : null;
-      const price = this.resolveRowPrice(row, product, staged);
+      const total = this.resolveRowTotal(row, product, staged);
+      const price = total / Number(row.qty || 1);
+      const negotiated = row.offer_price != null && Number(row.offer_price) !== Number(product?.price ?? staged?.price);
+      const pack = staged?.category === 'accesorios' && !negotiated ? readAccessoryPack(this.parseNotes(staged.notes).accessoryPack) : null;
       return {
         productId: row.product_id,
         sku: product?.sku || staged?.sku || null,
@@ -406,7 +421,8 @@ export class CartController {
         color: this.resolveRowColor(product, staged) || null,
         qty: Number(row.qty || 1),
         price,
-        lineTotal: price * Number(row.qty || 1),
+        lineTotal: total,
+        ...(pack ? { accessoryPresentation: { ...pack, packages: Math.floor(Number(row.qty || 1) / pack.units), looseUnits: Number(row.qty || 1) % pack.units } } : {}),
         ownerUserId: staged?.owner_user_id ?? null,
       };
     });
@@ -463,7 +479,7 @@ export class CartController {
             address,
             notes,
             deliveryCost: delivery.cost,
-            items: groupItems.map((item) => ({ productId: item.productId, sku: item.sku, title: item.title, color: item.color, qty: item.qty, unitPrice: item.price })),
+            items: groupItems.map((item) => ({ productId: item.productId, sku: item.sku, title: item.title, color: item.color, qty: item.qty, unitPrice: item.price, lineTotal: item.lineTotal })),
           });
           numbers.push(request.number);
         }

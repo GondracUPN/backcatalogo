@@ -51,3 +51,12 @@ assert.deepEqual(extractModels('watch ultra 2'), ['Apple Watch Ultra 2']);
 assert.deepEqual(extractStorage('iphone 15 256gb y 1 tb'), ['256 GB', '1 TB']);
 
 console.log('analytics.test.ts ok');
+
+// Conversiones: origen y datos públicos sobreviven la normalización sin PII.
+const contact = cleanEvent({ type: 'click_whatsapp', source: 'card', product_title: 'MacBook Air', sku: 'MBA-001', utmSource: 'Instagram', utmMedium: 'social', utmCampaign: 'equipos', phone: '999999999', conversation: 'privada', metadata: { phone: '999999999' } }, { consent: false, now })!;
+assert.equal(contact.source, null);
+assert.equal(contact.utm_source, 'instagram');
+assert.deepEqual(contact.metadata, { placement: 'card', product_title: 'MacBook Air', sku: 'MBA-001' });
+assert.equal(contact.visitor_id, null);
+assert.equal(cleanEvent({ type: 'click_whatsapp', source: 'arbitrary' }, { consent: false, now })!.metadata!.placement, null);
+for (const type of ['click_reviews', 'click_deliveries', 'click_category']) assert.ok(cleanEvent({ type }, { consent: false, now }));

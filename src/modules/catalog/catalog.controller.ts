@@ -15,7 +15,7 @@ type HydratedRow = { pub: CatalogPublic; product?: CatalogProduct; staged?: Stag
 
 function publicCategoryGroup(value: unknown) {
   const category = String(value || '').trim().toLowerCase();
-  return ['macbook', 'ipad', 'iphone', 'watch'].includes(category) ? category : 'otros';
+  return ['macbook', 'ipad', 'iphone', 'watch', 'accesorios'].includes(category) ? category : 'otros';
 }
 
 @Controller('catalog')
@@ -131,7 +131,7 @@ export class CatalogController {
       }
     }
 
-    const condition = String(
+    const condition = staged?.category === 'accesorios' && (product?.product_condition || staged.product_condition) === 'Nuevo' && (product?.presentation || staged.presentation) === 'sellado' ? 'Sellado' : String(
       product?.product_condition ||
         staged?.product_condition ||
         notes?.productCondition ||
@@ -172,6 +172,7 @@ export class CatalogController {
     return {
       id: pub.id,
       product_id: pub.product_id,
+      sku: product?.sku || staged?.sku || notes?.manualSku || notes?.sourceSku || undefined,
       slug: pub.slug,
       category: publicCategoryGroup(pub.category),
       image: img,

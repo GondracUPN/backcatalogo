@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, HttpCode, Post, Query, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CatalogProduct } from '../../entities/catalog-product.entity';
@@ -122,6 +122,103 @@ export class SyncController {
     );
   }
 
+  // Snapshot del mismo inventario comercial, con autorización compartida y SKU estable.
+  // Solo este namespace admite actualizaciones sobre una publicación existente.
+  private async syncAccessory(idemKey: string, p: any) {
+    const sku = String(p?.sku || '');
+    if (!/^acc-(?:ref-\d+-[a-f0-9]{16}|lot-\d+)$/.test(sku)
+      || typeof p.selected !== 'boolean' || !Number.isSafeInteger(p.stock) || p.stock < 0
+      || typeof p.title !== 'string' || !p.title.trim()
+      || !Number.isFinite(Number(p.price)) || Number(p.price) < 0
+      || (p.selected && !(Number(p.price) > 0))) {
+      throw new BadRequestException('Invalid accessory snapshot');
+    }
+    await this.products.manager.transaction(async (em) => {
+      await em.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['accessory:' + sku]);
+      const logs = em.getRepository(SyncLog);
+      if (await logs.findOne({ where: { idem_key: idemKey } })) return;
+      const products = em.getRepository(CatalogProduct);
+      const staged = em.getRepository(StagedProduct);
+      const publications = em.getRepository(CatalogPublic);
+      for (const oldSku of Array.isArray(p.legacySkus) ? p.legacySkus : []) {
+        if (!/^MS-\d+$/.test(String(oldSku))) continue;
+        const old = await products.findOne({ where: { sku: oldSku } });
+        const oldStaged = await staged.findOne({ where: { sku: oldSku } });
+        if (String(this.parseNotes(oldStaged?.notes)?.tipo).toLowerCase() !== 'accesorios') continue;
+        if (old?.status === 'sold' || oldStaged?.status === 'sold') continue;
+        // La limpieza preventiva no retira publicaciones realizadas en el panel.
+        if (!p.selected && oldStaged?.status === ('published' as any)) continue;
+        if (old) {
+          await products.update({ id: old.id }, { stock: 0, status: 'draft' });
+          await publications.update({ product_id: old.id }, { is_published: false });
+        }
+        if (oldStaged) {
+          await staged.update({ id: oldStaged.id }, { stock: 0, status: 'hidden' });
+          await publications.update({ product_id: oldStaged.source_id }, { is_published: false });
+        }
+      }
+      const existing = await products.findOne({ where: { sku } });
+      const id = existing?.id || this.toDeterministicUuid(sku);
+      // Ventas iniciadas en el catálogo todavía sin confirmar en Servicios:
+      // restarlas del snapshot local evita ofrecer dos veces esas unidades.
+      let pending = 0;
+      const tables = await em.query("SELECT to_regclass('sold_records') AS sales, to_regclass('sale_sync_events') AS events");
+      if (tables[0]?.sales && tables[0]?.events) {
+        const rows = await em.query(`SELECT count(*)::int AS qty FROM sold_records s
+          WHERE s.sku = $1 AND NOT (s.id::text = ANY($2::text[]))`,
+          [sku, Array.isArray(p.confirmedSales) ? p.confirmedSales.map(String) : []]);
+        pending = Number(rows[0]?.qty || 0);
+      }
+      const previousStaged = await staged.findOne({ where: { sku } });
+      const publication = await publications.findOne({ where: { product_id: id } });
+      if (!p.selected && !existing && !previousStaged) {
+        await logs.save(logs.create({ idem_key: idemKey }));
+        return;
+      }
+      // Recibir inventario no equivale a publicar. Solo el panel marca published.
+      const manuallyPublished = p.selected && publication?.is_published === true && previousStaged?.status === ('published' as any);
+      const stock = p.selected ? Math.max(0, p.stock - pending) : 0;
+      const status = manuallyPublished ? 'listed' : 'draft';
+      const rawCondition = String(previousStaged?.product_condition || existing?.product_condition || p.productCondition || '').toLowerCase();
+      const condition = /open\s*box/.test(rawCondition) ? 'Open Box' : /^(nuevo|sellado)$/.test(rawCondition) ? 'Nuevo' : 'Usado';
+      const presentation = rawCondition === 'sellado' ? 'sellado' : null;
+      // Recupera los títulos genéricos producidos por el editor antiguo; conserva nombres personalizados.
+      const originalTitle = String(p.title || '').trim();
+      const productTitle = !existing?.title || /^accesorios$/i.test(existing.title.trim()) ? originalTitle : existing.title;
+      const stagedTitle = !previousStaged?.title || /^accesorios$/i.test(previousStaged.title.trim()) ? originalTitle : previousStaged.title;
+      // El catálogo conserva precio, tipo de venta, notas y fotos editados aquí.
+      await products.upsert({ ...(existing || {}), id, sku,
+        title: productTitle, price: existing?.price ?? String(p.price), stock, status,
+        sale_type: existing?.sale_type || 'VENTA_SIMPLE',
+        product_condition: condition as any,
+        presentation: existing?.presentation ?? presentation,
+      }, { conflictPaths: ['sku'] });
+      const notes = JSON.stringify({ ...(this.parseNotes(previousStaged?.notes) || { tipo: 'accesorios', productCondition: condition }), accessorySourceTitle: originalTitle, ...(Number.isSafeInteger(p.accessoryCode) && p.accessoryCode > 0 ? { accessoryCode: p.accessoryCode } : {}) });
+      await staged.upsert({ ...(previousStaged || {}), source_id: id, sku,
+        title: stagedTitle, price: previousStaged?.price ?? String(p.price), stock,
+        status: (manuallyPublished ? 'published' : p.selected ? 'draft' : 'hidden') as any,
+        category: previousStaged?.category || 'accesorios', images: previousStaged?.images || [], notes,
+        sale_type: previousStaged?.sale_type || 'VENTA_SIMPLE',
+        product_condition: condition,
+        presentation: previousStaged?.presentation ?? presentation,
+      }, { conflictPaths: ['source_id'] });
+      if (publication) {
+        await publications.save(publications.create({ ...publication, is_published: manuallyPublished }));
+      }
+      await logs.save(logs.create({ idem_key: idemKey }));
+    });
+    if (!process.env.MACSO_TEST_DATABASE_URL) {
+      try {
+        await fetch(`${process.env.NEXT_BASE_URL || 'http://127.0.0.1:3000'}/api/admin/revalidate`, {
+          method: 'POST', signal: AbortSignal.timeout(5000),
+          headers: { 'Content-Type': 'application/json', ...(process.env.REVALIDATE_SECRET ? { 'x-revalidate-secret': process.env.REVALIDATE_SECRET } : {}) },
+          body: JSON.stringify({ tags: ['catalog-products', 'catalog-staged'] }),
+        });
+      } catch {}
+    }
+    return { ok: true, accessorySnapshot: true };
+  }
+
   @Post('product')
   @HttpCode(200)
   async syncProduct(
@@ -129,15 +226,20 @@ export class SyncController {
     @Body() body: any,
     @Headers('x-sync-secret') syncSecret?: string,
     @Headers('authorization') authorization?: string,
-  ) {
+  ): Promise<{ ok: boolean; accessorySnapshot?: boolean; idempotent?: boolean; skipped?: string; published?: boolean; previouslyPublished?: boolean; sold?: boolean; merged?: boolean }> {
     requireSyncSecret({ secret: syncSecret, authorization });
     if (!idemKey) throw new UnauthorizedException('missing idempotency key');
+
+    if (body?.event === 'accessory.snapshot') return this.syncAccessory(idemKey, body.product);
 
     const exists = await this.logs.findOne({ where: { idem_key: idemKey } });
     if (exists) return { ok: true, idempotent: true };
 
     const evt: IncomingEvent = body?.event;
     const p = body?.product || {};
+    if (evt !== 'product.sold' && [p.category, p.tipo, p.specs?.tipo].some((value) => String(value || '').trim().toLowerCase() === 'accesorios')) {
+      return { ok: true, skipped: 'accessory_requires_explicit_selection' };
+    }
     const sku = String(p?.sku || '').trim().replace(/^svc(?=[-_\s]*\d)/i, 'MS');
     if (!sku) throw new UnauthorizedException('missing sku');
     const sid = this.toDeterministicUuid(String(p.id ?? sku));

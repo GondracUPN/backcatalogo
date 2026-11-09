@@ -12,6 +12,7 @@
     "seed": "ts-node src/seed.ts",
     "test:catalog-p1": "ts-node src/tests/catalog-p1.test.ts",
     "test:availability": "ts-node src/tests/catalog-availability.test.ts",
+    "test:accessories": "ts-node src/tests/accessories.test.ts",
     "test:marketplace-resolver": "ts-node src/tests/marketplace-resolver.test.ts",
     "test:smoke": "ts-node src/tests/validate-product.test.ts && ts-node src/tests/catalog-p1.test.ts && ts-node src/tests/perf-security.test.ts && npm run test:modules",
     "test:perf-security": "ts-node src/tests/perf-security.test.ts",
@@ -24,7 +25,8 @@
     "audit:photo-urls": "ts-node src/scripts/audit-photo-urls.ts",
     "test:photo-review": "ts-node src/tests/photo-review.test.ts",
     "test:sales-analytics": "ts-node src/tests/sales-analytics.test.ts",
-    "test:sales-sync-edit": "ts-node src/tests/sales-sync-edit.test.ts"
+    "test:sales-sync-edit": "ts-node src/tests/sales-sync-edit.test.ts",
+    "test:accessory-packs": "ts-node src/tests/accessory-packs.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",

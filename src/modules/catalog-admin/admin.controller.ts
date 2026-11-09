@@ -1,4 +1,6 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Put, Query, UnauthorizedException } from '@nestjs/common';
+import { withdrawAccessoryFromServices } from '../../utils/accessory-withdrawal';
+import { accessoryFields } from '../../utils/accessory-fields';
+import { BadRequestException, ForbiddenException, Body, Controller, Get, Headers, Param, Post, Put, Query, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, ILike, In, IsNull, Not } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -525,6 +527,7 @@ export class AdminController {
 
     const rawCategory = String(body?.category || 'otros').toLowerCase();
     const category = CATEGORIES.has(rawCategory) ? rawCategory : 'otros';
+    if (category === 'accesorios' && body?.stock !== undefined && (!Number.isSafeInteger(Number(body.stock)) || Number(body.stock) < 0 || Number(body.stock) > 2147483647)) throw new BadRequestException('invalid accessory stock');
     const rawSaleType = String(body?.sale_type ?? body?.saleType ?? 'PREVENTA').toUpperCase();
     const saleType = SALE_TYPES.has(rawSaleType) ? rawSaleType : 'PREVENTA';
     const title = String(body?.title || 'Preventa').trim() || 'Preventa';
@@ -540,18 +543,25 @@ export class AdminController {
       if (tries === 9) throw new BadRequestException('SKU no disponible');
     }
 
+    const accessory = category === 'accesorios' ? accessoryFields(body, parseNotes(body?.notes) || {}) : {};
+    if (category === 'accesorios') {
+      if (!String(body?.title || '').trim()) throw new BadRequestException('Título requerido');
+      if (!Number.isFinite(Number(body?.price)) || Number(body.price) <= 0) throw new BadRequestException('Precio inválido');
+      if (!accessory.product_condition) throw new BadRequestException('Estado requerido');
+    }
     const created = this.stagedRepo.create({
       source_id: randomUUID(),
       sku,
       title,
       price: String(Number(body?.price || 0) || 0),
-      stock: Math.max(1, Number(body?.stock || 1) || 1),
+      stock: category === 'accesorios' ? Number(body?.stock ?? 1) : Math.max(1, Number(body?.stock || 1) || 1),
       status: 'draft' as any,
       category,
       tags: null,
       images: Array.isArray(body?.images) ? body.images : [],
       notes: typeof body?.notes === 'string' ? body.notes : null,
       sale_type: saleType,
+      ...accessory,
       owner_user_id: String(staff.role || '').toUpperCase() === 'VENDEDOR' && !staff.canViewServiceInventory ? Number(staff.sub) : null,
     });
 
@@ -618,6 +628,15 @@ export class AdminController {
     this.assertStagedAccess(staff, staged);
 
     const category = String(patch.category ?? staged.category ?? '').toLowerCase();
+    if (category === 'accesorios') {
+      if (!String(patch.title ?? staged.title ?? '').trim()) throw new BadRequestException('Título requerido');
+      const price = Number(patch.price ?? staged.price);
+      if (!Number.isFinite(price) || price <= 0) throw new BadRequestException('Precio inválido');
+      if (body.accessoryCosts !== undefined && !isAdminStaff(staff) && staged.owner_user_id == null) {
+        throw new ForbiddenException('Sin permiso para editar costos');
+      }
+      Object.assign(patch, accessoryFields(body, parseNotes(patch.notes ?? staged.notes) || {}));
+    }
     const saleType = String(patch.sale_type ?? staged.sale_type ?? '').toUpperCase();
     const patchNotes = parseNotes(patch.notes ?? staged.notes);
     const iphoneModel = patch.iphone_model ?? staged.iphone_model;
@@ -671,7 +690,8 @@ export class AdminController {
     if (saleType !== 'PREVENTA' && productCondition !== 'Nuevo' && /(?:^|\+)\s*Otros\s*(?:$|\+)/i.test(String(includes || '')) && !includesExtra) {
       throw new BadRequestException('includes_extra required');
     }
-    if (productCondition && productCondition !== 'Nuevo') {
+    if (category === 'accesorios' && (!Number.isSafeInteger(Number(patch.stock ?? staged.stock)) || Number(patch.stock ?? staged.stock) < 0 || Number(patch.stock ?? staged.stock) > 2147483647)) throw new BadRequestException('invalid accessory stock');
+    if (category !== 'accesorios' && productCondition && productCondition !== 'Nuevo') {
       const stockNum = Number(patch.stock ?? staged.stock ?? 0);
       if (stockNum !== 1) throw new BadRequestException('stock must be 1 for condition');
     }
@@ -714,6 +734,16 @@ export class AdminController {
     if (!staged) throw new BadRequestException('not found');
     if (String(staged.status || '').toLowerCase() === 'published') {
       throw new BadRequestException('cannot delete published staged');
+    }
+    if (staged.category === 'accesorios') {
+      await withdrawAccessoryFromServices(staged.sku);
+      await this.stagedRepo.update({ id }, { status: 'hidden' as any, stock: 0 });
+      const product = await this.productRepo.findOne({ where: { sku: staged.sku } });
+      if (product) {
+        await this.productRepo.update({ id: product.id }, { status: 'hidden' as any, stock: 0 });
+        await this.publicRepo.update({ product_id: product.id }, { is_published: false });
+      }
+      return { ok: true };
     }
     await this.stagedRepo.delete({ id });
     return { ok: true };
@@ -844,7 +874,7 @@ export class AdminController {
     if (saleType === 'OFERTA') finalPrice = null;
 
     let publishTitle = String(staged.title || validation.autoTitle || '').trim();
-    if (saleType === 'PREVENTA' && publishTitle && !/^preventa\s+/i.test(publishTitle)) {
+    if (staged.category !== 'accesorios' && saleType === 'PREVENTA' && publishTitle && !/^preventa\s+/i.test(publishTitle)) {
       publishTitle = `Preventa ${publishTitle}`.trim();
     }
     if (publishTitle !== staged.title) {
@@ -908,11 +938,11 @@ export class AdminController {
     );
     // Marcar staged como publicado para ocultarlo del inventario
     await this.stagedRepo.update({ id }, { status: 'published' as any, title: publishTitle, variant_group: effectiveVariantGroup || null });
-    const mergeIds = Array.isArray(body?.mergeStagedIds)
+    const mergeIds = staged.category !== 'accesorios' && Array.isArray(body?.mergeStagedIds)
       ? body.mergeStagedIds.map((value: unknown) => String(value || '').trim()).filter(Boolean).filter((value: string) => value !== id)
       : [];
     const mainSkuKey = String(staged.sku || '').trim().toLowerCase();
-    const mergeSkus = Array.isArray(body?.mergeStagedSkus)
+    const mergeSkus = staged.category !== 'accesorios' && Array.isArray(body?.mergeStagedSkus)
       ? body.mergeStagedSkus
           .map((value: unknown) => String(value || '').trim())
           .filter(Boolean)
@@ -1180,7 +1210,7 @@ export class AdminController {
     // Ocultar unidades históricamente vendidas aunque un estado antiguo haya
     // quedado incorrectamente como "published" en staged_products.
     const linkedRowsSource = linkedRowsSourceRaw.filter(
-      (row) => !soldSkuKeys.has(String(row.sku || '').trim().toLowerCase()),
+      (row) => (row.category === 'accesorios' && Number(row.stock) > 0) || !soldSkuKeys.has(String(row.sku || '').trim().toLowerCase()),
     );
     // Una unidad marcada como published en inventario debe conservar activa su
     // publicación. Esto repara separaciones antiguas que limpiaron el vínculo
@@ -1191,7 +1221,7 @@ export class AdminController {
       linkedRowsSource
         .filter((stagedRow) => {
           const rowNotes = parseNotes(stagedRow.notes);
-          return !isSealedCondition(stagedRow.product_condition || rowNotes?.productCondition || rowNotes?.estado);
+          return stagedRow.category !== 'accesorios' && !isSealedCondition(stagedRow.product_condition || rowNotes?.productCondition || rowNotes?.estado);
         })
         .map((stagedRow) => String(stagedRow.sku || '').trim())
         .filter(Boolean),
@@ -1212,7 +1242,7 @@ export class AdminController {
     const legacyIndependentRows = linkedRowsSource.filter((row) => {
       const rowNotes = parseNotes(row.notes);
       const condition = row.product_condition || rowNotes?.productCondition || rowNotes?.estado;
-      return Boolean(String(rowNotes?.linkedMainSku || '').trim()) && !isSealedCondition(condition);
+      return row.category !== 'accesorios' && Boolean(String(rowNotes?.linkedMainSku || '').trim()) && !isSealedCondition(condition);
     });
     if (legacyIndependentRows.length) {
       for (const linked of legacyIndependentRows) {
@@ -1369,7 +1399,7 @@ export class AdminController {
           images: pub?.images || staged?.images || [],
           product,
           staged,
-          mainUnitSold: soldSkuKeys.has(String(product.sku || '').trim().toLowerCase()),
+          mainUnitSold: staged?.category !== 'accesorios' && soldSkuKeys.has(String(product.sku || '').trim().toLowerCase()),
           // Solo los equipos sellados representan unidades intercambiables de
           // un mismo stock. Usados/Open Box/Arreglados conservan los datos de
           // cada equipo aunque se agrupen por modelo en la administración.
@@ -2061,7 +2091,8 @@ export class AdminController {
       );
       requestedLinked = candidate;
     }
-    const independentUnits = !isSealedCondition(
+    const isAccessoryStock = mainStaged?.category === 'accesorios';
+    const independentUnits = !isAccessoryStock && !isSealedCondition(
       product.product_condition || mainStaged?.product_condition || mainNotes?.productCondition || mainNotes?.estado,
     );
     // En equipos usados/open box/arreglados, pulsar vender en la fila principal
@@ -2117,6 +2148,8 @@ export class AdminController {
           },
         );
       }
+    } else if (isAccessoryStock && mainStaged) {
+      await this.stagedRepo.update({ id: mainStaged.id }, { stock: nextStock, status: (nextStock > 0 ? 'published' : 'sold') as any });
     } else if ((independentUnits || nextStock <= 0) && mainStaged) {
       await this.stagedRepo.update({ id: mainStaged.id }, { status: 'sold' as any, stock: 0 });
     }
@@ -2287,7 +2320,8 @@ export class AdminController {
       soldNotes?.productCondition ||
       soldNotes?.estado ||
       soldNotes?.specs?.estado;
-    const sealed = isSealedCondition(productCondition);
+    const accessoryStock = soldStaged?.category === 'accesorios';
+    const sealed = accessoryStock || isSealedCondition(productCondition);
     // Solo los sellados comparten una cantidad acumulada. Cada usado/open box
     // representa un equipo concreto y, al anular su venta, vuelve con stock 1.
     const nextStock = sealed || soldIsMain ? Math.max(1, Number(product.stock || 0) + 1) : 1;
@@ -2298,7 +2332,7 @@ export class AdminController {
     if (mainStaged) {
       await this.stagedRepo.update(
         { id: mainStaged.id },
-        { status: 'published' as any, ...(!sealed ? { stock: 1 } : {}) },
+        { status: 'published' as any, ...(accessoryStock ? { stock: nextStock } : !sealed ? { stock: 1 } : {}) },
       );
     }
 

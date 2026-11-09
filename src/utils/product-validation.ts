@@ -257,7 +257,8 @@ export function validateProductBeforePublish(
 
   if (!productCondition) errors.push('product_condition requerido');
   if (productCondition && !PRODUCT_CONDITIONS.has(String(productCondition))) errors.push('product_condition invalido');
-  if (productCondition && productCondition !== 'Nuevo') {
+  if (category === 'accesorios' && (!Number.isSafeInteger(Number(staged.stock)) || Number(staged.stock) < 1 || Number(staged.stock) > 2147483647)) errors.push('stock de accesorio debe ser entero mayor o igual a 1');
+  if (category !== 'accesorios' && productCondition && productCondition !== 'Nuevo') {
     const stockNum = Number(staged.stock ?? 0);
     if (stockNum !== 1) errors.push('stock debe ser 1 para estado usado/open box/arreglado');
   }

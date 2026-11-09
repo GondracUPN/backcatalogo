@@ -521,6 +521,10 @@ export class PullSyncService {
     const sourceSpecs = this.pickValue(staged?.specs, item?.specs, product?.specs, {}) as any;
     const sourceDetail = this.pickValue(sourceSpecs?.detalle, sourceSpecs?.detail, staged?.detalle, staged?.detail, item?.detalle, item?.detail, product?.detalle, product?.detail, {}) as any;
 
+    // Los accesorios solo entran por selección explícita, nunca por el barrido general.
+    const types = [product?.category, product?.tipo, item?.category, item?.tipo, staged?.category, sourceSpecs?.tipo];
+    if (types.some((value) => String(value || '').trim().toLowerCase() === 'accesorios')) return null;
+
     const { sku, sourceId } = this.itemKeys(item);
     if (!sku) return null;
 

@@ -1,6 +1,7 @@
 // Campos de producto e inventario que se pueden mostrar al público. Nunca
 // incluye el precio mínimo de oferta ni datos internos de las notas (costo,
 // proveedor…). Lo usan el catálogo y el carrito.
+import { readAccessoryPack } from './accessory-pack';
 import { CatalogProduct } from '../entities/catalog-product.entity';
 import { StagedProduct } from '../entities/staged-product.entity';
 import { normalizeAppleTitle, normalizeColorName } from './display-names';
@@ -29,7 +30,7 @@ export function publicNotes(staged: StagedProduct | null) {
       .map((key) => [key, sourceDetail[key]]),
   );
   const publicKeys = [
-    'saleType', 'discount', 'discountMode', 'discountType', 'finalPrice',
+    'accessoryCode', 'saleType', 'discount', 'discountMode', 'discountType', 'finalPrice',
     'precioLista', 'descuentoPorc', 'color', 'batteryHealth', 'batteryCycles',
     'bateria', 'iphoneModel', 'iphoneNumber', 'storageGb', 'storage',
     'iphoneSimType', 'simType', 'chipType', 'preventaDateFrom', 'preventaDateTo',
@@ -45,6 +46,7 @@ export function publicNotes(staged: StagedProduct | null) {
       .filter((key) => notes?.[key] !== undefined)
       .map((key) => [key, notes[key]]),
   ) as any;
+  if (staged?.category === 'accesorios') result.accessoryPack = readAccessoryPack(notes.accessoryPack);
   if (result.color !== undefined) result.color = normalizeColorName(result.color) || null;
   result.detalle = detail;
   result.specs = {

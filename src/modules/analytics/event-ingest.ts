@@ -12,6 +12,9 @@ export const EVENT_TYPES = [
   'compare_product',
   'add_to_cart',
   'click_whatsapp',
+  'click_category',
+  'click_reviews',
+  'click_deliveries',
   'start_order_request',
   'complete_order_request',
 ] as const;
@@ -110,10 +113,15 @@ export function cleanEvent(raw: any, context: { consent: boolean; sessionId?: un
     // La procedencia solo se calcula en la página de entrada.
     source: isLanding ? classifySource({ utmSource, utmMedium, gclid: Boolean(raw?.gclid), referrerHost, ownHost: context.ownHost }) : null,
     referrer_host: isLanding ? referrerHost : null,
-    utm_source: isLanding ? utmSource : null,
-    utm_medium: isLanding ? utmMedium : null,
-    utm_campaign: isLanding ? utmCampaign : null,
+    utm_source: utmSource,
+    utm_medium: utmMedium,
+    utm_campaign: utmCampaign,
     device,
-    metadata: null,
+    // Solo datos públicos y ubicaciones conocidas; no se acepta metadata arbitraria.
+    metadata: {
+      placement: ['hero', 'header', 'floating', 'card', 'product', 'product_mobile', 'contact', 'footer', 'home', 'no_results'].includes(raw?.source) ? raw.source : null,
+      product_title: text(raw?.product_title, 200),
+      sku: text(raw?.sku, 80),
+    },
   };
 }

@@ -31,7 +31,7 @@ export type NewRequestInput = {
   address: string | null;
   notes: string | null;
   deliveryCost: number;
-  items: Array<{ productId: string | null; sku: string | null; title: string; color: string | null; qty: number; unitPrice: number }>;
+  items: Array<{ productId: string | null; sku: string | null; title: string; color: string | null; qty: number; unitPrice: number; lineTotal?: number }>;
 };
 
 @Injectable()
@@ -53,7 +53,7 @@ export class PurchaseRequestsService {
   async createInTransaction(mgr: EntityManager, input: NewRequestInput) {
     const [{ seq }] = await mgr.query(`SELECT nextval('purchase_request_number_seq')::bigint AS seq`);
     const number = `SOL-${String(seq).padStart(6, '0')}`;
-    const itemsTotal = input.items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
+    const itemsTotal = input.items.reduce((sum, item) => sum + (item.lineTotal ?? item.unitPrice * item.qty), 0);
     const [request] = await mgr.query(
       `INSERT INTO purchase_requests (
          number, status, submission_key, owner_group, contact_request_id, customer_name, customer_phone,
@@ -68,7 +68,7 @@ export class PurchaseRequestsService {
     for (const item of input.items) {
       await mgr.query(
         `INSERT INTO purchase_request_items (request_id, product_id, sku, title, color, qty, unit_price, line_total) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [request.id, item.productId, item.sku, item.title, item.color, item.qty, item.unitPrice.toFixed(2), (item.unitPrice * item.qty).toFixed(2)],
+        [request.id, item.productId, item.sku, item.title, item.color, item.qty, item.unitPrice.toFixed(2), (item.lineTotal ?? item.unitPrice * item.qty).toFixed(2)],
       );
     }
     await mgr.query(

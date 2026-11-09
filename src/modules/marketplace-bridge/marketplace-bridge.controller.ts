@@ -85,7 +85,7 @@ export class MarketplaceBridgeController {
   async prepare(@Headers('authorization') authHeader: string, @Body() body: unknown) {
     const user = this.requireStaff(authHeader);
     const payload = marketplacePayload(body);
-    if (!/^\d+$/.test(payload.precio)) throw new BadRequestException('precio must contain only digits');
+    if (!/^\d+(?:\.\d{1,2})?$/.test(payload.precio)) throw new BadRequestException('precio must be a valid PEN amount');
     await this.ensureTable();
     const token = randomUUID();
     const rows = await this.productRepo.manager.query(

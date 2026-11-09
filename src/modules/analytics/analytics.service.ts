@@ -42,7 +42,7 @@ export class AnalyticsService {
   // ---------- Ingesta ----------
   async insert(events: CleanEvent[]) {
     if (!events.length) return 0;
-    const cols = ['occurred_at', 'event_type', 'consent', 'session_id', 'visitor_id', 'path', 'product_id', 'product_slug', 'category', 'query', 'results', 'filters', 'duration_ms', 'source', 'referrer_host', 'utm_source', 'utm_medium', 'utm_campaign', 'device'] as const;
+    const cols = ['occurred_at', 'event_type', 'consent', 'session_id', 'visitor_id', 'path', 'product_id', 'product_slug', 'category', 'query', 'results', 'filters', 'duration_ms', 'source', 'referrer_host', 'utm_source', 'utm_medium', 'utm_campaign', 'device', 'metadata'] as const;
     const values: unknown[] = [];
     const rows = events.map((event, r) => `(${cols.map((col, c) => {
       values.push((event as any)[col]);
