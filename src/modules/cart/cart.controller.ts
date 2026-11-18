@@ -12,6 +12,7 @@ import { publicProduct, publicStaged } from '../../utils/public-catalog';
 import { applyReservedStock } from '../../utils/stock-reservations';
 import { DeliveryService } from '../delivery/delivery.service';
 import { PurchaseRequestsService } from '../purchase-requests/purchase-requests.service';
+import { TelegramAlertsService } from './telegram-alerts.service';
 
 @Controller('cart')
 export class CartController {
@@ -22,6 +23,7 @@ export class CartController {
     @InjectRepository(StagedProduct) private staged: Repository<StagedProduct>,
     private delivery?: DeliveryService,
     private requests?: PurchaseRequestsService,
+    private telegramAlerts?: TelegramAlertsService,
   ) {}
 
   private setSessionCartItems(req: any, items: CartItem[]) {
@@ -449,7 +451,7 @@ export class CartController {
         const productColor = groupItems.length === 1 ? groupItems[0]?.color || null : null;
         const productPrice = groupItems.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0);
         const requestType = this.resolveRequestType(firstRow, firstProduct, firstStaged);
-        const metadata = { items: groupItems, source: 'cart', createdFrom: 'contact-modal', notes, deliveryOptionId: delivery.optionId };
+        const metadata = { items: groupItems, source: 'cart', createdFrom: 'contact-modal', notes, deliveryOptionId: delivery.optionId, ...this.telegramAlerts?.pendingMetadata() };
         const inserted = await mgr.query(
           `INSERT INTO contact_requests (
           cart_id, request_type, product_id, product_title, product_color, product_price,
@@ -503,6 +505,7 @@ export class CartController {
       }
       throw error;
     }
+    this.telegramAlerts?.kick();
     await this.refreshSessionCart(req, cartId);
 
     return { ok: true, id: insertedIds[0] || null, ids: insertedIds, numbers };

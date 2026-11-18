@@ -9,9 +9,11 @@ import { OfferAttempt } from '../../entities/offer-attempt.entity';
 import { OffersController } from './offers.controller';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
+import { TelegramAlertsService } from './telegram-alerts.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([CartItem, CatalogProduct, CatalogPublic, StagedProduct, OfferAttempt]), DeliveryModule, PurchaseRequestsModule],
   controllers: [CartController, OffersController],
+  providers: [TelegramAlertsService],
 })
 export class CartModule {}
