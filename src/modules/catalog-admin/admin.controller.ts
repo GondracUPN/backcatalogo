@@ -2574,6 +2574,7 @@ export class AdminController {
   async listContactRequests(@Headers('authorization') authHeader: string) {
     const staff = this.requireStaff(authHeader);
     await this.ensureContactRequestsTable();
+    const purchaseRequestsReady = await this.purchaseRequests?.isReady();
     const mgr = this.productRepo.manager;
     const rows = await mgr.query(`
       SELECT
@@ -2592,6 +2593,12 @@ export class AdminController {
         cr.created_at
       FROM contact_requests cr
       WHERE cr.owner_user_id IS NOT DISTINCT FROM $1
+      ${purchaseRequestsReady ? `AND NOT EXISTS (
+        SELECT 1 FROM purchase_requests pr
+        WHERE pr.contact_request_id = cr.id
+          AND pr.owner_user_id IS NOT DISTINCT FROM cr.owner_user_id
+          AND pr.status = 'cancelada'
+      )` : ''}
       ORDER BY cr.created_at DESC
       LIMIT 500
     `, [this.ownerUserIdForStaff(staff)]);

@@ -2,6 +2,9 @@ import { strict as assert } from 'assert';
 import { canTransition, TRANSITIONS } from '../modules/purchase-requests/request-status';
 import { PurchaseRequestsService } from '../modules/purchase-requests/purchase-requests.service';
 import { CartController } from '../modules/cart/cart.controller';
+import { AdminController } from '../modules/catalog-admin/admin.controller';
+import { PGlite } from '@electric-sql/pglite';
+import { DataSource } from 'typeorm';
 
 // Base de datos simulada: responde según el SQL recibido.
 function fakeDb(state: { request: any; items?: any[]; products?: any[]; reserved?: any[] }) {
@@ -127,6 +130,37 @@ const baseRequest = { id: '11111111-1111-1111-1111-111111111111', status: 'nueva
     await assert.rejects(() => cart.contactRequest({ session: {} }, { cartId: 'c', name: 'Ana', phone: '987654321', locationScope: 'shalom' }, ''), /lugar de entrega/);
     // El modo de respaldo admite Shalom con destino; llega a validar el carrito.
     await assert.rejects(() => cart.contactRequest({ session: {} }, { cartId: 'c', name: 'Ana', phone: '987654321', locationScope: 'shalom', locationValue: 'Arequipa, Cerro Colorado' }, ''), /carrito está vacío/);
+  }
+
+  // Alertas del panel: filtra cancelaciones ya guardadas y conserva avisos activos y antiguos.
+  {
+    const pg = new PGlite();
+    try {
+      const db = { query: async (sql: string, values?: unknown[]) => (await pg.query(sql, values)).rows };
+      const alerts = new AdminController(
+        { verifyToken: () => admin } as any, {} as any, {} as any,
+        { manager: db } as any, {} as any, {} as any, undefined,
+        new PurchaseRequestsService(db as unknown as DataSource),
+      );
+      assert.deepEqual((await alerts.listContactRequests('Bearer test')).items, []);
+      await pg.exec(`
+        INSERT INTO contact_requests (cart_id, product_title, customer_name, customer_phone, location_scope, location_value, owner_user_id)
+        VALUES ('cancelada', 'Producto', 'Prueba', '999999999', 'almacen', '', NULL),
+               ('activa', 'Producto', 'Prueba', '999999999', 'almacen', '', NULL),
+               ('antigua', 'Producto', 'Prueba', '999999999', 'almacen', '', NULL),
+               ('otro-vendedor', 'Producto', 'Prueba', '999999999', 'almacen', '', 7);
+        CREATE TABLE purchase_requests (contact_request_id uuid, owner_user_id integer, status text);
+        INSERT INTO purchase_requests (contact_request_id, owner_user_id, status)
+        SELECT id, owner_user_id, CASE WHEN cart_id = 'cancelada' THEN 'cancelada' ELSE 'nueva' END
+        FROM contact_requests WHERE cart_id IN ('cancelada', 'activa');
+      `);
+      const ids = async () => (await alerts.listContactRequests('Bearer test')).items.map((row: any) => row.cart_id).sort();
+      assert.deepEqual(await ids(), ['activa', 'antigua']);
+      await pg.exec("UPDATE purchase_requests SET status = 'cancelada'");
+      assert.deepEqual(await ids(), ['antigua']);
+    } finally {
+      await pg.close();
+    }
   }
 
   console.log('purchase-requests.test.ts ok');
