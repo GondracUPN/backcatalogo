@@ -13,6 +13,7 @@
     "test:catalog-p1": "ts-node src/tests/catalog-p1.test.ts",
     "test:availability": "ts-node src/tests/catalog-availability.test.ts",
     "test:telegram": "ts-node src/tests/telegram-alerts.test.ts",
+    "test:whatsapp": "ts-node src/tests/whatsapp-alerts.test.ts",
     "test:accessories": "ts-node src/tests/accessories.test.ts",
     "test:marketplace-resolver": "ts-node src/tests/marketplace-resolver.test.ts",
     "test:smoke": "ts-node src/tests/validate-product.test.ts && ts-node src/tests/catalog-p1.test.ts && ts-node src/tests/perf-security.test.ts && npm run test:modules",

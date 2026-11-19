@@ -10,10 +10,11 @@ import { OffersController } from './offers.controller';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { PurchaseRequestsModule } from '../purchase-requests/purchase-requests.module';
 import { TelegramAlertsService } from './telegram-alerts.service';
+import { WhatsAppAlertsService } from './whatsapp-alerts.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([CartItem, CatalogProduct, CatalogPublic, StagedProduct, OfferAttempt]), DeliveryModule, PurchaseRequestsModule],
   controllers: [CartController, OffersController],
-  providers: [TelegramAlertsService],
+  providers: [TelegramAlertsService, WhatsAppAlertsService],
 })
 export class CartModule {}
